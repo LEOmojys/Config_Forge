@@ -1,0 +1,10 @@
+[
+  {"element_id": "fire",      "name": "Fire",       "color_hex": "#F84F36"},
+  {"element_id": "ice",       "name": "Ice",        "color_hex": "#47C7FD"},
+  {"element_id": "thunder",   "name": "Thunder",    "color_hex": "#8872F1"},
+  {"element_id": "wind",      "name": "Wind",       "color_hex": "#00FF9C"},
+  {"element_id": "quantum",   "name": "Quantum",    "color_hex": "#1C29BA"},
+  {"element_id": "imaginary", "name": "Imaginary",  "color_hex": "#F4D258"},
+  {"element_id": "physical",  "name": "Physical",   "color_hex": "#CCCCCC"},
+  {"element_id": "water",     "name": "Water",      "color_hex": "#3399FF"}
+]

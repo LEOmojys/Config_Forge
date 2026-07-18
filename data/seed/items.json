@@ -1,0 +1,12 @@
+[
+  {"item_id": "it_heal_potion",  "name": "Healing Potion",   "item_type": "material",   "rarity": 1, "description": "Restores a small amount of HP."},
+  {"item_id": "it_mana_potion",  "name": "Mana Potion",      "item_type": "material",   "rarity": 1, "description": "Restores a small amount of energy."},
+  {"item_id": "it_gold_pouch",   "name": "Gold Pouch",       "item_type": "currency",   "rarity": 2, "description": "Contains 500 gold coins."},
+  {"item_id": "it_pyro_core",    "name": "Pyro Core",        "item_type": "material",   "rarity": 3, "description": "A blazing core from fire-element creatures."},
+  {"item_id": "it_cryo_shard",   "name": "Cryo Shard",       "item_type": "material",   "rarity": 3, "description": "An icy shard from ice-element creatures."},
+  {"item_id": "it_thunder_gem",  "name": "Thunder Gem",      "item_type": "material",   "rarity": 3, "description": "An electrified gem from thunder-element creatures."},
+  {"item_id": "it_ancient_coin", "name": "Ancient Coin",     "item_type": "currency",   "rarity": 4, "description": "A rare coin from an ancient civilization."},
+  {"item_id": "it_boss_core",    "name": "Boss Core",        "item_type": "material",   "rarity": 5, "description": "The core of a powerful boss monster."},
+  {"item_id": "it_quest_scroll", "name": "Mysterious Scroll","item_type": "quest_item", "rarity": 2, "description": "An old scroll with faded text."},
+  {"item_id": "it_hero_medal",   "name": "Hero Medal",       "item_type": "quest_item", "rarity": 4, "description": "Proof of a heroic deed."}
+]

@@ -1,0 +1,8 @@
+[
+  {"skill_id": "sk_fireball",       "name": "Fireball",         "skill_type": "normal",   "element_id": "fire",    "cooldown": 2.0,  "damage_multiplier": 1.5, "stance_damage": 1.0,  "range": 15.0, "is_aoe": false, "energy_cost": 0,   "description": "Launches a fireball at a single target."},
+  {"skill_id": "sk_ice_lance",      "name": "Ice Lance",        "skill_type": "normal",   "element_id": "ice",     "cooldown": 3.0,  "damage_multiplier": 1.8, "stance_damage": 1.5,  "range": 20.0, "is_aoe": false, "energy_cost": 0,   "description": "Hurls an ice lance with high stagger."},
+  {"skill_id": "sk_thunder_strike", "name": "Thunder Strike",   "skill_type": "normal",   "element_id": "thunder", "cooldown": 4.0,  "damage_multiplier": 2.0, "stance_damage": 2.0,  "range": 10.0, "is_aoe": true,  "energy_cost": 30,  "description": "Calls down lightning in an area."},
+  {"skill_id": "sk_heal_wave",      "name": "Heal Wave",        "skill_type": "ultimate", "element_id": "water",   "cooldown": 15.0, "damage_multiplier": 0.0, "stance_damage": 0.0,  "range": 25.0, "is_aoe": true,  "energy_cost": 60,  "description": "Heals all allies in range."},
+  {"skill_id": "sk_summon_minion",  "name": "Summon Minion",    "skill_type": "monster",  "element_id": "physical","cooldown": 12.0, "damage_multiplier": 0.0, "stance_damage": 0.0,  "range": 10.0, "is_aoe": false, "energy_cost": 40,  "description": "Summons a lesser minion to fight."},
+  {"skill_id": "sk_rage_slash",     "name": "Rage Slash",       "skill_type": "monster",  "element_id": "physical","cooldown": 6.0,  "damage_multiplier": 3.5, "stance_damage": 3.0,  "range": 5.0,  "is_aoe": false, "energy_cost": 20,  "description": "A powerful melee strike in rage."}
+]

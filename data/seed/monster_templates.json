@@ -1,0 +1,5 @@
+[
+  {"template_id": "tpl_melee_normal",  "name": "Melee Normal",  "monster_type": "normal", "base_hp": 500,  "base_attack": 60,  "base_defense": 40,  "base_speed": 100, "base_stance": 30,  "default_ai": "melee"},
+  {"template_id": "tpl_ranged_elite",  "name": "Ranged Elite",  "monster_type": "elite",  "base_hp": 2000, "base_attack": 150, "base_defense": 100, "base_speed": 80,  "base_stance": 60,  "default_ai": "ranged"},
+  {"template_id": "tpl_boss_phase",    "name": "Boss Phase",    "monster_type": "boss",   "base_hp": 8000, "base_attack": 400, "base_defense": 250, "base_speed": 60,  "base_stance": 120, "default_ai": "boss_phase"}
+]
