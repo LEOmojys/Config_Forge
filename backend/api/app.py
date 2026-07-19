@@ -1,19 +1,19 @@
 """ConfigForge API: FastAPI backend for the generation workbench.
 
 Provider Selection Strategy (by env var):
-- ARK_API_KEY set     → DoubaoProvider for generation (火山方舟 json_schema 严格输出)
+- ARK_CODING_API_KEY / DOUBAO_API_KEY / ARK_API_KEY set → DoubaoProvider for generation (火山方舟 Coding Plan)
 - DEEPSEEK_API_KEY set → DeepSeekProvider for critic (异构模型交叉审查)
 - Neither set          → MockLLMProvider (MVP mode, 无需 API Key)
 """
 import sys, os, asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 CF_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if CF_ROOT not in sys.path:
     sys.path.insert(0, CF_ROOT)
 
-# Load .env
+# Load .env (force-override to ensure latest values)
 env_path = Path(CF_ROOT) / ".env"
 if env_path.exists():
     with open(env_path, encoding="utf-8") as f:
@@ -21,7 +21,10 @@ if env_path.exists():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if v:  # only set non-empty values
+                    os.environ[k] = v
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,7 +55,11 @@ rule_engine = RuleEngine(seed_store)
 csv_exporter = CsvExporter(str(Path(CF_ROOT) / "output" / "csv"))
 
 # ── Provider Selection ────────────────────────────────
-_ARK = bool(os.environ.get("ARK_API_KEY"))
+_ARK = bool(
+    os.environ.get("ARK_CODING_API_KEY")
+    or os.environ.get("DOUBAO_API_KEY")
+    or os.environ.get("ARK_API_KEY")
+)
 _DS  = bool(os.environ.get("DEEPSEEK_API_KEY"))
 gen_provider = None
 crit_provider = None
@@ -62,7 +69,7 @@ if _ARK:
     try:
         from backend.providers import DoubaoProvider
         gen_provider = DoubaoProvider()
-        print("[ConfigForge] Generator: DoubaoProvider (火山方舟 json_schema strict)")
+        print("[ConfigForge] Generator: DoubaoProvider (火山方舟 Coding Plan)")
     except Exception as e:
         print(f"[ConfigForge] Doubao init failed: {e}")
 
@@ -107,16 +114,74 @@ class GenerateRequest(BaseModel):
     enable_critic: bool = True
 
 
+class TableRowRequest(BaseModel):
+    row: dict[str, Any]
+
+
 # ═══════════════ API Routes ═══════════════════════════
 
 @app.get("/api/status")
 async def status():
+    import os
+    provider_model = getattr(gen_provider, "model", None)
+    provider_models = getattr(gen_provider, "models", [])
+    provider_base_url = getattr(gen_provider, "base_url", None)
     return {
         "mode": "live" if gen_provider else "mock",
         "generator": type(gen_provider).__name__ if gen_provider else "MockLLMProvider",
         "critic": type(crit_provider).__name__ if crit_provider else "MockLLMProvider",
-        "ark_api_key_set": _ARK,
-        "deepseek_api_key_set": _DS,
+        "model": provider_model or os.environ.get("ARK_CODING_MODEL") or os.environ.get("ARK_MODEL") or "N/A",
+        "model_candidates": provider_models,
+        "base_url": provider_base_url or os.environ.get("ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+        "coding_key_set": bool(
+            os.environ.get("ARK_CODING_API_KEY")
+            or os.environ.get("DOUBAO_API_KEY")
+            or os.environ.get("ARK_API_KEY")
+        ),
+        "ark_key_set": bool(os.environ.get("ARK_API_KEY")),
+        "deepseek_key_set": bool(os.environ.get("DEEPSEEK_API_KEY")),
+    }
+
+
+@app.get("/api/test-doubao")
+async def test_doubao():
+    """测试豆包 API：自动探测可用模型"""
+    import os
+    from openai import OpenAI
+
+    api_key = (
+        os.environ.get("ARK_CODING_API_KEY", "")
+        or os.environ.get("DOUBAO_API_KEY", "")
+        or os.environ.get("ARK_API_KEY", "")
+    )
+    candidates = [
+        os.environ.get("ARK_CODING_MODEL", ""),
+        os.environ.get("ARK_MODEL", ""),
+        "ark-code-latest",
+        "doubao-seed-code-preview-latest",
+        "doubao-seed-2.0-code",
+        "doubao-seed-code",
+    ]
+    candidates = list(dict.fromkeys([c for c in candidates if c]))  # unique, no empty
+
+    results_coding = {}
+    client = OpenAI(
+        base_url=os.environ.get("ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+        api_key=api_key,
+    )
+    for model in candidates:
+        try:
+            resp = client.chat.completions.create(
+                model=model, max_tokens=10,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            results_coding[model] = f"OK: {resp.choices[0].message.content}"
+        except Exception as e:
+            results_coding[model] = str(e)[:150]
+
+    return {
+        "coding_endpoint": results_coding,
+        "available_models": candidates,
     }
 
 @app.post("/api/generate")
@@ -138,13 +203,16 @@ async def generate(req: GenerateRequest):
             try:
                 if req.job_type == "skill":
                     result = orchestrator.generate_skill(req.requirement, req.enable_critic,
-                                                         job_id=job_id, trace_id=trace_id)
+                                                         job_id=job_id, trace_id=trace_id,
+                                                         close_events=False)
                 elif req.job_type == "monster":
                     result = orchestrator.generate_monster(req.requirement, req.enable_critic,
-                                                          job_id=job_id, trace_id=trace_id)
+                                                          job_id=job_id, trace_id=trace_id,
+                                                          close_events=False)
                 else:
                     result = orchestrator.generate_quest(req.requirement, req.enable_critic,
-                                                         job_id=job_id, trace_id=trace_id)
+                                                         job_id=job_id, trace_id=trace_id,
+                                                         close_events=False)
                 # Export CSV after generation
                 result["csv_files"] = [str(p) for p in _export(result["bundle"], req.job_type)]
                 event_bus.mark_done(job_id, result)
@@ -184,6 +252,17 @@ async def get_trace(trace_id: str):
     if t is None: raise HTTPException(404, "Trace not found")
     return t
 
+@app.delete("/api/traces/{trace_id}")
+async def delete_trace(trace_id: str):
+    if not trace_store.delete(trace_id):
+        raise HTTPException(404, "Trace not found")
+    return {"status": "ok", "deleted": 1, "trace_id": trace_id}
+
+@app.delete("/api/traces")
+async def clear_traces(status: Optional[str] = Query(None, pattern="^(running|passed|need_human|failed|error)$")):
+    deleted = trace_store.clear(status=status)
+    return {"status": "ok", "deleted": deleted, "filter": {"status": status}}
+
 @app.get("/api/tables")
 async def list_tables():
     return csv_exporter.list_tables()
@@ -192,9 +271,46 @@ async def list_tables():
 async def get_table(table_name: str):
     return csv_exporter.read_table(table_name)
 
+@app.post("/api/tables/{table_name}/rows")
+async def add_table_row(table_name: str, req: TableRowRequest):
+    try:
+        row = _validate_table_row(table_name, req.row)
+        table = csv_exporter.add_row(table_name, row)
+        sync = _sync_table_change(table_name, "add", row)
+        return {"status": "ok", "table": table, "json_sync": sync}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+
+@app.put("/api/tables/{table_name}/rows/{row_index}")
+async def update_table_row(table_name: str, row_index: int, req: TableRowRequest):
+    try:
+        row = _validate_table_row(table_name, req.row)
+        previous, table = csv_exporter.update_row(table_name, row_index, row)
+        sync = _sync_table_change(table_name, "update", row, previous=previous)
+        return {"status": "ok", "table": table, "json_sync": sync}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, detail=str(exc))
+    except IndexError as exc:
+        raise HTTPException(404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
+
+@app.delete("/api/tables/{table_name}/rows/{row_index}")
+async def delete_table_row(table_name: str, row_index: int):
+    try:
+        deleted, table = csv_exporter.delete_row(table_name, row_index)
+        sync = _sync_table_change(table_name, "delete", deleted, previous=deleted)
+        return {"status": "ok", "table": table, "deleted_row": deleted, "json_sync": sync}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, detail=str(exc))
+    except IndexError as exc:
+        raise HTTPException(404, detail=str(exc))
+
 @app.post("/api/tables/validate-all")
 async def validate_all():
-    return {"status": "ok"}
+    return _validate_exported_tables()
 
 @app.post("/api/eval/run")
 async def run_eval():
@@ -204,7 +320,15 @@ async def run_eval():
 async def export_result(trace_id: str = Query(...)):
     t = trace_store.get(trace_id)
     if t is None: raise HTTPException(404, "Trace not found")
-    return {"status": "ok", "trace": t}
+    rounds = t.get("rounds") or []
+    if not rounds:
+        raise HTTPException(400, "Trace has no generation rounds")
+    final_round = next((r for r in reversed(rounds) if r.get("passed")), rounds[-1])
+    bundle = final_round.get("bundle")
+    if not bundle:
+        raise HTTPException(400, "Trace has no bundle to export")
+    csv_files = [str(p) for p in _export(bundle, t["job_type"])]
+    return {"status": "ok", "trace_id": trace_id, "csv_files": csv_files}
 
 @app.get("/api/seed/context")
 async def seed_context():
@@ -220,6 +344,242 @@ def _export(bundle_dict: dict, job_type: str):
         return csv_exporter.export_monster(MonsterBundle(**bundle_dict))
     else:
         return csv_exporter.export_quest(QuestBundle(**bundle_dict))
+
+def _schema_by_table():
+    from backend.schemas.skill import SkillConfig
+    from backend.schemas.monster import MonsterTemplateConfig, MonsterConfig, MonsterSkillLink, MonsterLootEntry
+    from backend.schemas.quest import QuestTemplateConfig, QuestObjectiveConfig
+
+    return {
+        "skills": SkillConfig,
+        "monster_templates": MonsterTemplateConfig,
+        "monster_configs": MonsterConfig,
+        "monster_skills": MonsterSkillLink,
+        "monster_loot": MonsterLootEntry,
+        "quest_templates": QuestTemplateConfig,
+        "quest_objectives": QuestObjectiveConfig,
+    }
+
+
+def _validate_table_row(table_name: str, row: dict[str, Any]) -> dict[str, Any]:
+    schema = _schema_by_table().get(table_name)
+    if schema is None:
+        raise ValueError(f"Unknown table: {table_name}")
+
+    clean = {key: (None if value == "" else value) for key, value in row.items()}
+    try:
+        model = schema(**clean)
+    except Exception as exc:
+        raise ValueError(str(exc))
+    return model.model_dump(mode="json")
+
+
+_TABLE_KEY_FIELDS = {
+    "skills": ("skill_id",),
+    "monster_templates": ("template_id",),
+    "monster_configs": ("monster_id",),
+    "monster_skills": ("monster_id", "slot"),
+    "monster_loot": ("loot_group_id", "item_id"),
+    "quest_templates": ("quest_id",),
+    "quest_objectives": ("objective_id",),
+}
+
+
+def _row_key(table_name: str, row: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(str(row.get(field, "")) for field in _TABLE_KEY_FIELDS[table_name])
+
+
+def _matches_row(table_name: str, candidate: Optional[dict], row: dict[str, Any]) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    return _row_key(table_name, candidate) == _row_key(table_name, row)
+
+
+def _sync_table_change(table_name: str, action: str, row: dict[str, Any], previous: Optional[dict[str, Any]] = None) -> dict:
+    json_dir = Path(CF_ROOT) / "output" / "json"
+    trace_dir = Path(CF_ROOT) / "output" / "traces"
+    match_row = previous or row
+    warnings: list[str] = []
+    files_updated = 0
+    records_updated = 0
+
+    for path in json_dir.glob("*.json"):
+        changed, count = _sync_bundle_file(path, table_name, action, row, match_row, warnings)
+        if changed:
+            files_updated += 1
+            records_updated += count
+
+    for path in trace_dir.glob("trace_*.json"):
+        try:
+            data = _read_json(path)
+        except Exception:
+            continue
+        changed = False
+        count = 0
+        for round_data in data.get("rounds", []):
+            bundle = round_data.get("bundle")
+            if isinstance(bundle, dict):
+                round_changed, round_count = _apply_table_change_to_bundle(bundle, table_name, action, row, match_row, warnings)
+                changed = changed or round_changed
+                count += round_count
+        if changed:
+            path.write_text(_json_dumps(data), encoding="utf-8")
+            files_updated += 1
+            records_updated += count
+
+    return {
+        "files_updated": files_updated,
+        "records_updated": records_updated,
+        "warnings": sorted(set(warnings)),
+    }
+
+
+def _sync_bundle_file(path: Path, table_name: str, action: str, row: dict[str, Any],
+                      match_row: dict[str, Any], warnings: list[str]) -> tuple[bool, int]:
+    try:
+        data = _read_json(path)
+    except Exception:
+        return False, 0
+    changed, count = _apply_table_change_to_bundle(data, table_name, action, row, match_row, warnings)
+    if changed:
+        path.write_text(_json_dumps(data), encoding="utf-8")
+    return changed, count
+
+
+def _apply_table_change_to_bundle(bundle: dict[str, Any], table_name: str, action: str,
+                                  row: dict[str, Any], match_row: dict[str, Any],
+    warnings: list[str]) -> tuple[bool, int]:
+    if table_name == "skills":
+        if action == "add":
+            warnings.append("skills: add cannot be assigned to a generated JSON bundle automatically")
+            return False, 0
+        return _apply_list_change(bundle.get("skills"), table_name, action, row, match_row)
+    if table_name == "monster_templates":
+        return _apply_object_change(bundle, ("monster_template", "summon_template"), table_name, action, row, match_row, warnings)
+    if table_name == "monster_configs":
+        return _apply_object_change(bundle, ("monster_config", "summon_config"), table_name, action, row, match_row, warnings)
+    if table_name == "monster_skills":
+        return _apply_parented_list_change(bundle, table_name, action, row, match_row, [
+            ("monster_config", "monster_id", "monster_skills"),
+            ("summon_config", "monster_id", "summon_skills"),
+        ])
+    if table_name == "monster_loot":
+        return _apply_parented_list_change(bundle, table_name, action, row, match_row, [
+            ("monster_config", "loot_group_id", "monster_loot"),
+            ("summon_config", "loot_group_id", "summon_loot"),
+        ])
+    if table_name == "quest_templates":
+        return _apply_object_change(bundle, ("quest_template",), table_name, action, row, match_row, warnings)
+    if table_name == "quest_objectives":
+        return _apply_parented_list_change(bundle, table_name, action, row, match_row, [
+            ("quest_template", "quest_id", "quest_objectives"),
+        ])
+    return False, 0
+
+
+def _apply_object_change(bundle: dict[str, Any], object_keys: tuple[str, ...], table_name: str, action: str,
+                         row: dict[str, Any], match_row: dict[str, Any], warnings: list[str]) -> tuple[bool, int]:
+    changed = False
+    count = 0
+    if action == "add":
+        warnings.append(f"{table_name}: top-level add cannot be assigned to a generated JSON bundle automatically")
+        return False, 0
+    for key in object_keys:
+        if _matches_row(table_name, bundle.get(key), match_row):
+            if action == "delete":
+                warnings.append(f"{table_name}: top-level delete was applied to CSV only; generated JSON bundle was kept valid")
+                continue
+            bundle[key] = row
+            changed = True
+            count += 1
+    return changed, count
+
+
+def _apply_list_change(items: Any, table_name: str, action: str,
+                       row: dict[str, Any], match_row: dict[str, Any]) -> tuple[bool, int]:
+    if not isinstance(items, list):
+        return False, 0
+    if action == "add":
+        if any(_matches_row(table_name, item, row) for item in items):
+            return False, 0
+        items.append(row)
+        return True, 1
+
+    changed = False
+    count = 0
+    next_items = []
+    for item in items:
+        if _matches_row(table_name, item, match_row):
+            changed = True
+            count += 1
+            if action == "update":
+                next_items.append(row)
+        else:
+            next_items.append(item)
+    if changed:
+        items[:] = next_items
+    return changed, count
+
+
+def _apply_parented_list_change(bundle: dict[str, Any], table_name: str, action: str,
+                                row: dict[str, Any], match_row: dict[str, Any],
+                                mappings: list[tuple[str, str, str]]) -> tuple[bool, int]:
+    changed = False
+    count = 0
+    for parent_key, parent_field, list_key in mappings:
+        parent = bundle.get(parent_key)
+        items = bundle.get(list_key)
+        if not isinstance(parent, dict) or not isinstance(items, list):
+            continue
+        if action == "add" and str(parent.get(parent_field, "")) != str(row.get(parent_field, "")):
+            continue
+        list_changed, list_count = _apply_list_change(items, table_name, action, row, match_row)
+        changed = changed or list_changed
+        count += list_count
+    return changed, count
+
+
+def _read_json(path: Path) -> dict:
+    import json
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _json_dumps(data: dict) -> str:
+    import json
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _validate_exported_tables():
+    schema_by_table = _schema_by_table()
+
+    violations = []
+    checked_rows = 0
+    for table_name in csv_exporter.list_tables():
+        schema = schema_by_table.get(table_name)
+        if schema is None:
+            continue
+        table = csv_exporter.read_table(table_name)
+        headers = table.get("headers", [])
+        for idx, row in enumerate(table.get("rows", []), start=2):
+            checked_rows += 1
+            values = {
+                header: (None if value == "" else value)
+                for header, value in zip(headers, row)
+            }
+            try:
+                schema(**values)
+            except Exception as exc:
+                violations.append({
+                    "table": table_name,
+                    "row": idx,
+                    "message": str(exc),
+                })
+
+    return {
+        "status": "ok" if not violations else "failed",
+        "checked_rows": checked_rows,
+        "violations": violations,
+    }
 
 
 if __name__ == "__main__":

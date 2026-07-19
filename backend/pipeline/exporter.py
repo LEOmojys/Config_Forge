@@ -1,7 +1,6 @@
 """CSV Exporter: deterministically splits bundles into flat CSV tables."""
 import csv
 from pathlib import Path
-from typing import Optional
 from ..schemas.bundle import MonsterBundle, QuestBundle, SkillBundle
 
 
@@ -96,7 +95,7 @@ class CsvExporter:
 
     def read_table(self, table_name: str) -> dict:
         """Read a CSV table and return headers + rows for API."""
-        path = self._dir / f"{table_name}.csv"
+        path = self._table_path(table_name)
         if not path.exists():
             return {"table_name": table_name, "headers": [], "rows": [], "error": "Table not found"}
         with open(path, "r", encoding="utf-8-sig") as f:
@@ -108,3 +107,59 @@ class CsvExporter:
     def list_tables(self) -> list[str]:
         """List available table names."""
         return sorted([p.stem for p in self._dir.glob("*.csv")])
+
+    def add_row(self, table_name: str, row: dict) -> dict:
+        table = self.read_table(table_name)
+        if table.get("error"):
+            raise FileNotFoundError(table["error"])
+        headers = table["headers"]
+        rows = table["rows"]
+        rows.append(self._dict_to_row(headers, row))
+        self._write_table(table_name, headers, rows)
+        return self.read_table(table_name)
+
+    def update_row(self, table_name: str, row_index: int, row: dict) -> tuple[dict, dict]:
+        table = self.read_table(table_name)
+        if table.get("error"):
+            raise FileNotFoundError(table["error"])
+        headers = table["headers"]
+        rows = table["rows"]
+        if row_index < 0 or row_index >= len(rows):
+            raise IndexError("Row index out of range")
+        previous = self._row_to_dict(headers, rows[row_index])
+        rows[row_index] = self._dict_to_row(headers, row)
+        self._write_table(table_name, headers, rows)
+        return previous, self.read_table(table_name)
+
+    def delete_row(self, table_name: str, row_index: int) -> tuple[dict, dict]:
+        table = self.read_table(table_name)
+        if table.get("error"):
+            raise FileNotFoundError(table["error"])
+        headers = table["headers"]
+        rows = table["rows"]
+        if row_index < 0 or row_index >= len(rows):
+            raise IndexError("Row index out of range")
+        deleted = self._row_to_dict(headers, rows.pop(row_index))
+        self._write_table(table_name, headers, rows)
+        return deleted, self.read_table(table_name)
+
+    def _table_path(self, table_name: str) -> Path:
+        if "/" in table_name or "\\" in table_name or table_name in {"", ".", ".."}:
+            raise ValueError(f"Invalid table name: {table_name}")
+        return self._dir / f"{table_name}.csv"
+
+    def _write_table(self, table_name: str, headers: list[str], rows: list[list]) -> Path:
+        path = self._table_path(table_name)
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            writer.writerows(rows)
+        return path
+
+    @staticmethod
+    def _dict_to_row(headers: list[str], row: dict) -> list[str]:
+        return ["" if row.get(header) is None else str(row.get(header, "")) for header in headers]
+
+    @staticmethod
+    def _row_to_dict(headers: list[str], row: list[str]) -> dict:
+        return {header: (row[idx] if idx < len(row) else "") for idx, header in enumerate(headers)}

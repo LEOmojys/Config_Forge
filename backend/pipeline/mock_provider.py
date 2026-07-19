@@ -109,7 +109,7 @@ class MockLLMProvider:
             else:
                 tid = f"target_{uuid.uuid4().hex[:4]}"
             objectives.append(QuestObjectiveConfig(
-                objective_id=f"{q_id}_obj_{i}",
+                objective_id=f"obj_{q_id[4:]}_{i}",
                 quest_id=q_id,
                 objective_type=otype,
                 target_id=tid,

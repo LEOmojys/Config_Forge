@@ -110,7 +110,7 @@ for fn in ["elements.json", "items.json", "base_skills.json", "monster_templates
 print("\n=== Section 7: RuleEngine ===")
 from backend.validators.rule_engine import RuleEngine
 rule_methods = [m for m in dir(RuleEngine) if m.startswith("_R0")]
-rule_ids_implemented = sorted([m.replace("_R", "R")[:4] for m in rule_methods if m[2:5].isdigit()])
+rule_ids_implemented = sorted(set(m.replace("_R", "R")[:4] for m in rule_methods if m[2:5].isdigit()))
 check(f"10 rules: {rule_ids_implemented}", len(rule_ids_implemented) == 10,
       f"expected R001-R010, got {rule_ids_implemented}")
 

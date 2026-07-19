@@ -31,6 +31,45 @@ export async function getTable(name: string) {
   return res.json()
 }
 
+export async function addTableRow(name: string, row: Record<string, any>) {
+  const res = await fetch(`${API_BASE}/tables/${name}/rows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ row }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function updateTableRow(name: string, rowIndex: number, row: Record<string, any>) {
+  const res = await fetch(`${API_BASE}/tables/${name}/rows/${rowIndex}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ row }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function deleteTableRow(name: string, rowIndex: number) {
+  const res = await fetch(`${API_BASE}/tables/${name}/rows/${rowIndex}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function deleteTrace(traceId: string) {
+  const res = await fetch(`${API_BASE}/traces/${traceId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function clearTraces(status?: string) {
+  const query = status ? `?status=${encodeURIComponent(status)}` : ''
+  const res = await fetch(`${API_BASE}/traces${query}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
 export async function runEval() {
   const res = await fetch(`${API_BASE}/eval/run`, { method: 'POST' })
   return res.json()

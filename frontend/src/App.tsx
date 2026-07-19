@@ -1,4 +1,5 @@
-import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { NavLink, Navigate, useLocation } from 'react-router-dom'
 import { Layout, Menu } from 'antd'
 import { ExperimentOutlined, TableOutlined, HistoryOutlined, BarChartOutlined } from '@ant-design/icons'
 import Workbench from './pages/Workbench'
@@ -15,7 +16,22 @@ const navItems = [
   { key: '/eval', icon: <BarChartOutlined />, label: 'Evaluation' },
 ]
 
+const pages = [
+  { path: '/', element: <Workbench /> },
+  { path: '/tables', element: <Tables /> },
+  { path: '/traces', element: <Traces /> },
+  { path: '/eval', element: <Evaluation /> },
+]
+
 export default function App() {
+  const location = useLocation()
+  const currentPath = pages.some(page => page.path === location.pathname) ? location.pathname : '/'
+  const [mountedPages, setMountedPages] = useState<string[]>(['/'])
+
+  useEffect(() => {
+    setMountedPages(prev => prev.includes(currentPath) ? prev : [...prev, currentPath])
+  }, [currentPath])
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider width={200} style={{ background: '#141414', borderRight: '1px solid #303030' }}>
@@ -24,7 +40,7 @@ export default function App() {
         </div>
         <Menu
           mode="inline"
-          defaultSelectedKeys={['/']}
+          selectedKeys={[currentPath]}
           style={{ background: 'transparent', borderRight: 0 }}
           items={navItems.map(item => ({
             key: item.key,
@@ -35,13 +51,12 @@ export default function App() {
       </Sider>
       <Layout>
         <Content style={{ padding: 24, background: '#1a1a1a', minHeight: '100vh' }}>
-          <Routes>
-            <Route path="/" element={<Workbench />} />
-            <Route path="/tables" element={<Tables />} />
-            <Route path="/traces" element={<Traces />} />
-            <Route path="/eval" element={<Evaluation />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          {location.pathname !== currentPath && <Navigate to="/" replace />}
+          {pages.map(page => mountedPages.includes(page.path) && (
+            <div key={page.path} style={{ display: page.path === currentPath ? 'block' : 'none' }}>
+              {page.element}
+            </div>
+          ))}
         </Content>
       </Layout>
     </Layout>

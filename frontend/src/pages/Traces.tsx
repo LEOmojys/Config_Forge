@@ -1,27 +1,66 @@
 import { useState, useEffect } from 'react'
-import { Card, Table, Tag, Typography, Button, Drawer, Collapse, Timeline, Space, Spin } from 'antd'
-import { EyeOutlined, ReloadOutlined } from '@ant-design/icons'
-import { getTraces, getTrace } from '../api/client'
+import { useLocation } from 'react-router-dom'
+import { Card, Table, Tag, Typography, Button, Drawer, Collapse, Space, Popconfirm, message } from 'antd'
+import { DeleteOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons'
+import { clearTraces, deleteTrace, getTraces, getTrace } from '../api/client'
 
 export default function Traces() {
   const [traces, setTraces] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [detail, setDetail] = useState<any>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const location = useLocation()
 
   const loadTraces = async () => {
     setLoading(true)
-    const data = await getTraces()
-    setTraces(data)
-    setLoading(false)
+    try {
+      const data = await getTraces()
+      setTraces([...data].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))))
+    } catch (e: any) {
+      message.error(e.message || 'Load traces failed')
+    } finally {
+      setLoading(false)
+    }
   }
 
-  useEffect(() => { loadTraces() }, [])
+  useEffect(() => {
+    if (location.pathname === '/traces') {
+      loadTraces()
+    }
+  }, [location.pathname])
 
   const viewDetail = async (traceId: string) => {
     const data = await getTrace(traceId)
     setDetail(data)
     setDrawerOpen(true)
+  }
+
+  const removeTrace = async (traceId: string) => {
+    try {
+      await deleteTrace(traceId)
+      if (detail?.trace_id === traceId) {
+        setDrawerOpen(false)
+        setDetail(null)
+      }
+      await loadTraces()
+      message.success('Trace deleted')
+    } catch (e: any) {
+      message.error(e.message || 'Delete failed')
+    }
+  }
+
+  const cleanTraces = async (status?: string) => {
+    try {
+      const res = await clearTraces(status)
+      if (!status || detail?.status === status) {
+        setDrawerOpen(false)
+        setDetail(null)
+      }
+      await loadTraces()
+      message.success(`Deleted ${res.deleted} trace records`)
+    } catch (e: any) {
+      message.error(e.message || 'Clean failed')
+    }
   }
 
   const columns = [
@@ -35,17 +74,36 @@ export default function Traces() {
     { title: 'Rounds', dataIndex: 'rounds', key: 'rounds', width: 60, render: (_: any, r: any) => r.rounds?.length || '-' },
     { title: 'Created', dataIndex: 'created_at', key: 'ts', width: 180, render: (v: string) => v?.slice(0, 19).replace('T', ' ') },
     {
-      title: '', key: 'action', width: 60,
-      render: (_: any, r: any) => <Button size="small" icon={<EyeOutlined />} onClick={() => viewDetail(r.trace_id)} />,
+      title: '', key: 'action', width: 100,
+      render: (_: any, r: any) => (
+        <Space>
+          <Button size="small" icon={<EyeOutlined />} onClick={() => viewDetail(r.trace_id)} />
+          <Popconfirm title="Delete this trace?" okText="Delete" okButtonProps={{ danger: true }} onConfirm={() => removeTrace(r.trace_id)}>
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      ),
     },
   ]
+  const finalBundle = detail?.rounds?.length ? detail.rounds[detail.rounds.length - 1]?.bundle : null
 
   return (
     <div>
       <Typography.Title level={3} style={{ color: '#fff' }}>
         Trace Replay
-        <Button icon={<ReloadOutlined />} onClick={loadTraces} style={{ marginLeft: 12 }} size="small">Refresh</Button>
       </Typography.Title>
+      <Space style={{ marginBottom: 12 }} wrap>
+        <Button icon={<ReloadOutlined />} onClick={loadTraces}>Refresh</Button>
+        <Popconfirm title="Delete all running traces?" okText="Clean" okButtonProps={{ danger: true }} onConfirm={() => cleanTraces('running')}>
+          <Button danger>Clean Running</Button>
+        </Popconfirm>
+        <Popconfirm title="Delete all need_human traces?" okText="Clean" okButtonProps={{ danger: true }} onConfirm={() => cleanTraces('need_human')}>
+          <Button danger>Clean Need Human</Button>
+        </Popconfirm>
+        <Popconfirm title="Delete all trace records?" okText="Delete All" okButtonProps={{ danger: true }} onConfirm={() => cleanTraces()}>
+          <Button danger icon={<DeleteOutlined />}>Clear All</Button>
+        </Popconfirm>
+      </Space>
       <Card style={{ background: '#1f1f1f', border: '1px solid #303030' }}>
         <Table columns={columns} dataSource={traces} rowKey="trace_id" size="small" loading={loading}
           pagination={{ pageSize: 20 }} scroll={{ x: 'max-content' }} />
@@ -59,6 +117,15 @@ export default function Traces() {
               <Tag>{detail.job_type}</Tag>
             </Space>
             <Typography.Paragraph style={{ color: '#aaa' }}>{detail.requirement}</Typography.Paragraph>
+            {finalBundle && (
+              <Collapse style={{ background: '#1a1a1a', marginBottom: 16 }} defaultActiveKey={['bundle']} items={[{
+                key: 'bundle',
+                label: 'Generated Bundle',
+                children: <pre style={{ color: '#ccc', fontSize: 11, maxHeight: 420, overflow: 'auto' }}>
+                  {JSON.stringify(finalBundle, null, 2)}
+                </pre>,
+              }]} />
+            )}
             <Typography.Title level={5} style={{ color: '#fff', marginTop: 24 }}>Rounds</Typography.Title>
             {detail.rounds?.map((r: any, i: number) => (
               <Card key={i} size="small" style={{ background: '#222', marginBottom: 8, border: '1px solid #333' }}

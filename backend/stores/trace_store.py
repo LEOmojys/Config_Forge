@@ -49,9 +49,30 @@ class TraceStore:
 
     def list_all(self) -> list[dict]:
         traces = []
-        for f in sorted(self._dir.glob("trace_*.json"), reverse=True):
+        for f in self._dir.glob("trace_*.json"):
             traces.append(json.loads(f.read_text(encoding="utf-8")))
-        return traces
+        return sorted(traces, key=lambda item: item.get("created_at") or "", reverse=True)
+
+    def delete(self, trace_id: str) -> bool:
+        p = self._path(trace_id)
+        if not p.exists():
+            return False
+        p.unlink()
+        return True
+
+    def clear(self, status: Optional[str] = None) -> int:
+        deleted = 0
+        for f in self._dir.glob("trace_*.json"):
+            if status:
+                try:
+                    trace = json.loads(f.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if trace.get("status") != status:
+                    continue
+            f.unlink()
+            deleted += 1
+        return deleted
 
     def _path(self, trace_id: str) -> Path:
         return self._dir / f"{trace_id}.json"

@@ -46,6 +46,7 @@ orch = Orchestrator(_MockGen(provider), _MockCritic(), seed, rules, traces, resu
 
 result = orch.generate_monster('Generate a level 30 fire elite monster with summoner AI')
 print(f"Orchestrator: status={result['status']}, rounds={result['rounds']}")
+assert result["status"] == "passed"
 
 # Test CSV exporter
 csv_exp = CsvExporter(os.path.join(BASE, 'output', 'csv'))
@@ -55,8 +56,10 @@ print(f"CSV files: {[str(p) for p in paths]}")
 # Test skill and quest generation
 skill_result = orch.generate_skill("Generate a fire ultimate skill with high AOE damage")
 print(f"Skill gen: status={skill_result['status']}, rounds={skill_result['rounds']}")
+assert skill_result["status"] == "passed"
 
 quest_result = orch.generate_quest("Generate a side quest requiring level 10 with kill and collect objectives")
 print(f"Quest gen: status={quest_result['status']}, rounds={quest_result['rounds']}")
+assert quest_result["status"] == "passed"
 
 print("\n=== ALL BACKEND TESTS PASSED ===")

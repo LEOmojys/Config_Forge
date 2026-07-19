@@ -1,102 +1,124 @@
-"""豆包 API Provider（火山方舟）：服务端 json_schema 严格结构化输出
+"""Doubao Coding Plan provider."""
 
-要点：
-- 火山方舟提供 OpenAI 兼容端点 https://ark.cn-beijing.volces.com/api/v3
-- response_format 支持 json_schema + strict: true，服务端保证 Schema 合法
-- strict 模式要求所有字段列入 required、additionalProperties 为 false
-- 异常时降级到 json_object + Pydantic 校验重试
-"""
 import os
-from openai import OpenAI
 from typing import Type, TypeVar
+
+from openai import OpenAI
 from pydantic import BaseModel
+
 from .base import LLMProvider
 
 T = TypeVar("T", bound=BaseModel)
 
+_DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
+_MODEL_CANDIDATES = (
+    "ark-code-latest",
+    "doubao-seed-code-preview-latest",
+    "doubao-seed-2.0-code",
+    "doubao-seed-code",
+)
 
-def _to_strict_schema(model: Type[BaseModel]) -> dict:
-    """Pydantic schema → 豆包 strict 模式：逐层追加 required + additionalProperties"""
-    schema = model.model_json_schema()
 
-    def enforce(node: dict):
-        if node.get("type") == "object":
-            props = node.get("properties", {})
-            node["required"] = list(props.keys())
-            node["additionalProperties"] = False
-            for p in props.values():
-                enforce(p)
-        for key in ("items",):
-            if key in node:
-                enforce(node[key])
-        for key in ("$defs", "definitions"):
-            for sub in node.get(key, {}).values():
-                enforce(sub)
+def _unique_nonempty(*values: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        value = (value or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
 
-    enforce(schema)
-    return schema
+
+def _is_missing_model_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return (
+        "invalidendpointormodel.notfound" in msg
+        or "does not exist" in msg
+        or "not found" in msg
+        or ("model" in msg and "not exist" in msg)
+    )
+
+
+def _resolve_api_key() -> str:
+    return (
+        os.environ.get("ARK_CODING_API_KEY", "").strip()
+        or os.environ.get("DOUBAO_API_KEY", "").strip()
+        or os.environ.get("ARK_API_KEY", "").strip()
+    )
 
 
 class DoubaoProvider(LLMProvider):
-    """豆包 API：结构化生成的主力 Provider"""
+    """OpenAI-compatible provider for Ark Coding Plan."""
 
-    def __init__(self, model: str = "doubao-seed-1-6-251015"):
-        api_key = os.environ.get("ARK_API_KEY", "")
+    def __init__(self, model: str = None):
+        api_key = _resolve_api_key()
         if not api_key:
-            raise ValueError("ARK_API_KEY environment variable not set (火山方舟 API Key)")
-        self.client = OpenAI(
-            base_url="https://ark.cn-beijing.volces.com/api/v3",
-            api_key=api_key,
-        )
-        self.model = model
+            raise ValueError(
+                "ARK_CODING_API_KEY (or DOUBAO_API_KEY / ARK_API_KEY) environment variable not set"
+            )
+
+        self.base_url = os.environ.get("ARK_CODING_BASE_URL", _DEFAULT_BASE_URL).strip() or _DEFAULT_BASE_URL
+        env_model = (model or os.environ.get("ARK_CODING_MODEL", "") or os.environ.get("ARK_MODEL", "")).strip()
+        self.models = _unique_nonempty(env_model, *_MODEL_CANDIDATES)
+        self.client = OpenAI(base_url=self.base_url, api_key=api_key)
+        self.model = self.models[0]
+
+        print(f"[DoubaoProvider] BaseURL: {self.base_url}")
+        print(f"[DoubaoProvider] Model candidates: {', '.join(self.models)}")
+
+    def _call_json(self, system_prompt: str, user_prompt: str, schema: Type[T], max_retries: int) -> T:
+        last_err = None
+        for model in self.models:
+            retry_err = None
+            for _ in range(max_retries + 1):
+                prompt = user_prompt
+                if retry_err:
+                    prompt += f"\n\n[Previous attempt failed validation: {retry_err}]"
+                try:
+                    resp = self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt},
+                        ],
+                        response_format={"type": "json_object"},
+                    )
+                    self.model = model
+                    return schema.model_validate_json(resp.choices[0].message.content)
+                except Exception as err:
+                    last_err = err
+                    if _is_missing_model_error(err):
+                        print(f"[DoubaoProvider] model unavailable: {model}")
+                        break
+                    retry_err = err
+
+        raise RuntimeError(f"Doubao generation failed ({max_retries + 1} attempts): {last_err}")
+
+    def _call_text(self, system_prompt: str, user_prompt: str, max_retries: int) -> str:
+        last_err = None
+        for model in self.models:
+            for _ in range(max_retries + 1):
+                try:
+                    resp = self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                    )
+                    self.model = model
+                    return resp.choices[0].message.content
+                except Exception as err:
+                    last_err = err
+                    if _is_missing_model_error(err):
+                        print(f"[DoubaoProvider] model unavailable: {model}")
+                        break
+
+        raise RuntimeError(f"Doubao text generation failed ({max_retries + 1} attempts): {last_err}")
 
     def generate_structured(self, system_prompt, user_prompt, schema: Type[T], max_retries: int = 2) -> T:
-        try:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema.__name__,
-                        "schema": _to_strict_schema(schema),
-                        "strict": True,
-                    },
-                },
-                extra_body={"thinking": {"type": "disabled"}},
-            )
-        except Exception:
-            return self._fallback_json_object(system_prompt, user_prompt, schema, max_retries)
-        return schema.model_validate_json(resp.choices[0].message.content)
-
-    def _fallback_json_object(self, system_prompt, user_prompt, schema, max_retries) -> T:
-        last_err = None
-        for _ in range(max_retries + 1):
-            prompt = user_prompt + (f"\n\n【上次校验失败】{last_err}" if last_err else "")
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
-                extra_body={"thinking": {"type": "disabled"}},
-            )
-            try:
-                return schema.model_validate_json(resp.choices[0].message.content)
-            except Exception as e:
-                last_err = e
-        raise RuntimeError(f"豆包结构化生成多次失败: {last_err}")
+        return self._call_json(system_prompt, user_prompt, schema, max_retries)
 
     def generate_text(self, system_prompt: str, user_prompt: str) -> str:
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        return resp.choices[0].message.content
+        return self._call_text(system_prompt, user_prompt, max_retries=2)

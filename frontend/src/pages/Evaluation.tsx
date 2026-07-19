@@ -51,10 +51,10 @@ export default function Evaluation() {
             {groupOrder.map(g => results[g] && (
               <Col span={6} key={g}>
                 <Card style={{ background: '#1f1f1f', border: '1px solid #303030' }}>
-                  <Statistic title={groupLabels[g]} value={`${(results[g].pass_rate * 100).toFixed(0)}%`}
-                    suffix="pass" valueStyle={{ color: results[g].pass_rate > 0.8 ? '#52c41a' : '#faad14' }} />
+                  <Statistic title={groupLabels[g]} value={results[g].disabled ? 'N/A' : `${(results[g].pass_rate * 100).toFixed(0)}%`}
+                    suffix={results[g].disabled ? '' : 'pass'} valueStyle={{ color: results[g].disabled ? '#8c8c8c' : results[g].pass_rate > 0.8 ? '#52c41a' : '#faad14' }} />
                   <div style={{ color: '#888', fontSize: 12 }}>
-                    {results[g].passed}/{results[g].total} samples, avg {results[g].avg_rounds} rounds
+                    {results[g].disabled ? results[g].note : `${results[g].passed}/${results[g].total} samples, avg ${results[g].avg_rounds} rounds`}
                   </div>
                 </Card>
               </Col>
@@ -64,7 +64,9 @@ export default function Evaluation() {
           {groupOrder.map(g => results[g] && (
             <Card key={g} title={<Typography.Text style={{ color: '#fff' }}>{groupLabels[g]} - Details</Typography.Text>}
               style={{ background: '#1f1f1f', border: '1px solid #303030', marginBottom: 12 }} size="small">
-              <Table
+              {results[g].disabled ? (
+                <Alert type="info" message={results[g].note} showIcon />
+              ) : <Table
                 columns={[
                   { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
                   { title: 'Type', dataIndex: 'type', key: 'type', width: 80, render: (v: string) => <Tag>{v}</Tag> },
@@ -76,7 +78,7 @@ export default function Evaluation() {
                 rowKey="id"
                 size="small"
                 pagination={false}
-              />
+              />}
             </Card>
           ))}
         </div>

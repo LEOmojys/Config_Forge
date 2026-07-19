@@ -70,11 +70,41 @@ class RuleEngine:
         # Bundle-internal skill IDs (from skills field) plus seed skills are valid
         bundle_skill_ids = {s.skill_id for s in bundle.skills}
         for link in bundle.monster_skills:
+            result.violations.extend(self._R003_monster_skill_owner(link, cfg.monster_id, "monster_skills"))
             result.violations.extend(self._R004_skill_ref(link, bundle_skill_ids))
 
         # Loot items: check seed + provide available alternatives
+        result.violations.extend(self._R003_loot_group_ref(bundle.monster_loot, cfg.loot_group_id, "monster_loot"))
         result.violations.extend(self._R005_loot_item_ref(bundle.monster_loot))
         result.violations.extend(self._R006_loot_chance_sum(bundle.monster_loot))
+
+        if bundle.summon_template:
+            result.violations.extend(self._R001_template(bundle.summon_template))
+        if bundle.summon_config:
+            result.violations.extend(self._R001_monster_config(bundle.summon_config))
+            result.violations.extend(self._R002_element(
+                bundle.summon_config.monster_id,
+                "monster_configs",
+                "element_id",
+                bundle.summon_config.element_id.value,
+            ))
+            result.violations.extend(self._R003_template_ref(bundle.summon_config, bundle))
+            result.violations.extend(self._R007_ratio(bundle.summon_config))
+            for link in bundle.summon_skills:
+                result.violations.extend(self._R003_monster_skill_owner(
+                    link, bundle.summon_config.monster_id, "monster_skills"
+                ))
+                result.violations.extend(self._R004_skill_ref(link, bundle_skill_ids))
+            result.violations.extend(self._R003_loot_group_ref(
+                bundle.summon_loot, bundle.summon_config.loot_group_id, "monster_loot"
+            ))
+            result.violations.extend(self._R005_loot_item_ref(bundle.summon_loot))
+            result.violations.extend(self._R006_loot_chance_sum(bundle.summon_loot))
+        elif bundle.summon_skills or bundle.summon_loot:
+            result.violations.append(RuleViolation(
+                "R003", "error", "monster_configs", "summon_config",
+                "summon_skills/summon_loot require summon_config"
+            ))
         return result
 
     def validate_quest_bundle(self, bundle: QuestBundle) -> ValidationResult:
@@ -83,6 +113,7 @@ class RuleEngine:
         result.violations.extend(self._R001_quest_template(qt))
         for obj in bundle.quest_objectives:
             result.violations.extend(self._R001_quest_objective(obj))
+            result.violations.extend(self._R003_quest_objective_owner(obj, qt.quest_id))
             result.violations.extend(self._R010_objective_target(obj))
         return result
 
@@ -123,7 +154,11 @@ class RuleEngine:
         return v
 
     def _R001_quest_template(self, q: QuestTemplateConfig) -> list[RuleViolation]:
-        return self._check_id(q.quest_id, "quest_templates", "quest_id")
+        v = self._check_id(q.quest_id, "quest_templates", "quest_id")
+        v += self._check_id(q.reward_group_id, "quest_templates", "reward_group_id")
+        if q.pre_quest_id:
+            v += self._check_id(q.pre_quest_id, "quest_templates", "quest_id")
+        return v
 
     def _R001_quest_objective(self, o: QuestObjectiveConfig) -> list[RuleViolation]:
         return self._check_id(o.objective_id, "quest_objectives", "objective_id")
@@ -143,11 +178,37 @@ class RuleEngine:
             return []
         if bundle and cfg.template_id == bundle.monster_template.template_id:
             return []
+        if bundle and bundle.summon_template and cfg.template_id == bundle.summon_template.template_id:
+            return []
         available = ", ".join(self.seed.get_template_ids())
         return [RuleViolation("R003", "error", "monster_configs", "template_id",
             f"template_id={cfg.template_id} 不存在。可用种子模板: [{available}]，或使用 Bundle 内自定义模板 ID")]
 
     # ── R004: skill_id exists (seed OR bundle-internal skills) ──
+    def _R003_monster_skill_owner(
+        self, link: MonsterSkillLink, expected_monster_id: str, table: str
+    ) -> list[RuleViolation]:
+        if link.monster_id == expected_monster_id:
+            return []
+        return [RuleViolation("R003", "error", table, "monster_id",
+            f"monster_id={link.monster_id} must match owning monster_id={expected_monster_id}")]
+
+    def _R003_loot_group_ref(
+        self, loots: list[MonsterLootEntry], expected_loot_group_id: str, table: str
+    ) -> list[RuleViolation]:
+        violations = []
+        for loot in loots:
+            if loot.loot_group_id != expected_loot_group_id:
+                violations.append(RuleViolation("R003", "error", table, "loot_group_id",
+                    f"loot_group_id={loot.loot_group_id} must match owning loot_group_id={expected_loot_group_id}"))
+        return violations
+
+    def _R003_quest_objective_owner(self, obj: QuestObjectiveConfig, expected_quest_id: str) -> list[RuleViolation]:
+        if obj.quest_id == expected_quest_id:
+            return []
+        return [RuleViolation("R003", "error", "quest_objectives", "quest_id",
+            f"quest_id={obj.quest_id} must match quest_template.quest_id={expected_quest_id}")]
+
     def _R004_skill_ref(self, link: MonsterSkillLink, bundle_skill_ids: set[str]) -> list[RuleViolation]:
         if link.skill_id in self.seed.skills or link.skill_id in bundle_skill_ids:
             return []

@@ -4,6 +4,28 @@ Game configuration generation agent workbench. Input natural language requiremen
 
 ## Quick Start
 
+Windows one-click startup:
+
+```bat
+start-dev.bat
+```
+
+The script checks backend/frontend dependencies, starts FastAPI and Vite in separate PowerShell windows, then opens http://localhost:3000.
+
+First-time or forced dependency setup:
+
+```powershell
+.\start-dev.ps1 -Install
+```
+
+Use a specific Python/conda interpreter:
+
+```powershell
+.\start-dev.ps1 -PythonPath "C:\path\to\python.exe"
+```
+
+Manual startup:
+
 ```bash
 # Backend
 cd configforge
@@ -17,6 +39,18 @@ npm run dev
 ```
 
 Open http://localhost:3000
+
+## Doubao Coding Plan Setup
+
+Use the Coding Plan endpoint for Doubao generation:
+
+```env
+ARK_CODING_API_KEY=your_volcengine_ark_api_key
+ARK_CODING_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3
+ARK_CODING_MODEL=ark-code-latest
+```
+
+The backend also accepts `DOUBAO_API_KEY` or legacy `ARK_API_KEY`, but `ARK_CODING_API_KEY` is preferred. Do not use old online-inference model IDs such as `doubao-pro-32k-240615` for Coding Plan requests.
 
 ## Supported Generation Types
 

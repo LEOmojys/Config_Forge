@@ -37,8 +37,12 @@ class EvalRunner:
     def run_ablation(self, samples: list[EvalSample]) -> dict:
         """Run G0-G3 ablation groups and return results."""
         results = {}
-        # G0: pure LLM, no RuleEngine, no Critic
-        results["G0_pure_llm"] = self._run_group(samples, skip_validation=True, enable_critic=False)
+        # G0 cannot be measured by this structured pipeline: providers must pass
+        # Pydantic before Orchestrator receives a bundle.
+        results["G0_pure_llm"] = self._not_measured(
+            samples,
+            "Raw LLM output is not available because generation is schema-gated before orchestration.",
+        )
         # G1: LLM + Pydantic only (Pydantic built into GeneratorAgent._generate)
         results["G1_pydantic"] = self._run_group(samples, skip_validation=True, enable_critic=False)
         # G2: LLM + Pydantic + RuleEngine (no Critic)
@@ -46,6 +50,17 @@ class EvalRunner:
         # G3: Full pipeline (RuleEngine + Critic)
         results["G3_full"] = self._run_group(samples, skip_validation=False, enable_critic=True)
         return results
+
+    def _not_measured(self, samples: list[EvalSample], note: str) -> dict:
+        return {
+            "passed": 0,
+            "total": len(samples),
+            "pass_rate": 0,
+            "avg_rounds": 0,
+            "details": [],
+            "disabled": True,
+            "note": note,
+        }
 
     def _run_group(self, samples: list[EvalSample], skip_validation: bool, enable_critic: bool) -> dict:
         group_results = []

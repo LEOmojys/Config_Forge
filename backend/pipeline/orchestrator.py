@@ -21,22 +21,26 @@ class Orchestrator:
 
     def generate_skill(self, requirement: str, enable_critic: bool = True,
                        skip_validation: bool = False, dry_run: bool = False,
-                       job_id: str = None, trace_id: str = None) -> dict:
-        return self._run("skill", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id)
+                       job_id: str = None, trace_id: str = None,
+                       close_events: bool = True) -> dict:
+        return self._run("skill", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events)
 
     def generate_monster(self, requirement: str, enable_critic: bool = True,
                          skip_validation: bool = False, dry_run: bool = False,
-                         job_id: str = None, trace_id: str = None) -> dict:
-        return self._run("monster", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id)
+                         job_id: str = None, trace_id: str = None,
+                         close_events: bool = True) -> dict:
+        return self._run("monster", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events)
 
     def generate_quest(self, requirement: str, enable_critic: bool = True,
                        skip_validation: bool = False, dry_run: bool = False,
-                       job_id: str = None, trace_id: str = None) -> dict:
-        return self._run("quest", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id)
+                       job_id: str = None, trace_id: str = None,
+                       close_events: bool = True) -> dict:
+        return self._run("quest", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events)
 
     def _run(self, job_type: str, requirement: str, enable_critic: bool,
              skip_validation: bool = False, dry_run: bool = False,
-             job_id: str = None, trace_id: str = None) -> dict:
+             job_id: str = None, trace_id: str = None,
+             close_events: bool = True) -> dict:
         self.seed.load()
         if dry_run:
             trace_id, job_id = None, None
@@ -44,7 +48,6 @@ class Orchestrator:
             if trace_id is None:
                 trace_id = self.traces.create(job_type, requirement)
             if job_id is None:
-                job_id = trace_id.replace("trace_", "j_") if trace_id else None
                 job_id = trace_id.replace("trace_", "j_")
         feedback: Optional[str] = None
         final_bundle = None
@@ -72,10 +75,6 @@ class Orchestrator:
                 validate_fn = self.rules.validate_quest_bundle
 
             _emit("generated", {"round": round_no, "bundle_summary": str(type(bundle).__name__)})
-
-            # Register bundle-internal skills/templates
-            if hasattr(self.seed, 'register_bundle'):
-                self.seed.register_bundle(bundle)
 
             # 2) L2 规则引擎校验
             if skip_validation:
@@ -125,6 +124,8 @@ class Orchestrator:
 
             if round_data["passed"]:
                 final_bundle = bundle
+                if not dry_run and hasattr(self.seed, 'register_bundle'):
+                    self.seed.register_bundle(bundle)
                 break
 
             feedback = self._build_feedback(vr, critic_result)
@@ -152,8 +153,7 @@ class Orchestrator:
             "bundle": final_bundle.model_dump(mode="json", exclude_none=True),
             "type": job_type,
         }
-        _emit("done", {"status": final_status, "rounds": round_no, "type": job_type})
-        if self.events and job_id:
+        if close_events and self.events and job_id:
             self.events.mark_done(job_id, result)
 
         return result
