@@ -60,6 +60,21 @@ The backend also accepts `DOUBAO_API_KEY` or legacy `ARK_API_KEY`, but `ARK_CODI
 | Monster | `MonsterBundle` | `monster_templates.csv` + `monster_configs.csv` + `monster_skills.csv` + `monster_loot.csv` |
 | Quest | `QuestBundle` | `quest_templates.csv` + `quest_objectives.csv` |
 
+## Batch Generation
+
+The workbench supports 1-20 items per generation job. Leave `Batch Count` empty
+to detect the quantity from the requirement, for example:
+
+```text
+生成10种不同的怪物，处于雪山地形，存在掉落物
+```
+
+You can also set `Batch Count` explicitly in the UI as a fallback when the
+requirement does not contain a quantity. When both are present, the quantity
+written in the requirement takes precedence. A batch runs sequentially to
+avoid provider rate-limit spikes. Each item receives its own JSON file,
+CSV rows, and child trace; the parent trace records aggregate progress.
+
 ## Pipeline
 
 ```
@@ -88,6 +103,39 @@ Up to 3 revision rounds. Exceeding returns `need_human` status.
 - G1: + Pydantic validation
 - G2: + RuleEngine (10 rules)
 - G3: + Critic review (full pipeline)
+
+## Output Acceptance Tests
+
+The acceptance framework runs every case in an isolated directory and audits
+Pydantic schemas, RuleEngine findings, requirement semantics, JSON/CSV parity,
+foreign keys, terminal traces, batch counts, and ID/name uniqueness.
+
+Run framework self-tests and fault-injection tests:
+
+```powershell
+python -m pytest tests\acceptance\test_framework.py -q
+```
+
+Run the complete deterministic Mock baseline:
+
+```powershell
+python -m tests.acceptance.run --mode mock
+```
+
+Run selected real-provider cases (this consumes API quota):
+
+```powershell
+python -m tests.acceptance.run --mode live --tag critical
+python -m tests.acceptance.run --mode live --case monster_snow_batch_ten --repeat 3
+```
+
+The Live runner loads non-empty values from the project `.env` when they are
+not already set in the calling shell; explicit shell environment values win.
+
+Case contracts are defined in `tests/acceptance/cases.json`. Reports and all
+isolated artifacts are written under `output/acceptance/<timestamp>/` by
+default. Live tests should be judged by repeated pass rate; structural and
+cross-file checks are expected to pass on every run.
 
 ## Technology
 

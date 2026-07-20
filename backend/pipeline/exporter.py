@@ -60,6 +60,10 @@ class CsvExporter:
             paths.append(self._append_csv(self._dir / "monster_skills.csv",
                 ["monster_id","slot","skill_id","trigger_key","weight"],
                 [[s.monster_id, s.slot, s.skill_id, s.trigger_key, s.weight] for s in bundle.summon_skills]))
+        if bundle.summon_loot:
+            paths.append(self._append_csv(self._dir / "monster_loot.csv",
+                ["loot_group_id","item_id","chance","min_count","max_count"],
+                [[l.loot_group_id, l.item_id, l.chance, l.min_count, l.max_count] for l in bundle.summon_loot]))
         return paths
 
     def export_quest(self, bundle: QuestBundle) -> list[Path]:

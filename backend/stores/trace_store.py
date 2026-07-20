@@ -11,7 +11,7 @@ class TraceStore:
         self._dir = Path(trace_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def create(self, job_type: str, requirement: str) -> str:
+    def create(self, job_type: str, requirement: str, metadata: Optional[dict] = None) -> str:
         trace_id = f"trace_{uuid.uuid4().hex[:12]}"
         trace = {
             "trace_id": trace_id,
@@ -24,8 +24,17 @@ class TraceStore:
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "completed_at": None,
         }
+        if metadata:
+            trace.update(metadata)
         self._write(trace_id, trace)
         return trace_id
+
+    def add_batch_item(self, trace_id: str, item: dict):
+        trace = self._read(trace_id)
+        if trace is None:
+            return
+        trace.setdefault("batch_items", []).append(item)
+        self._write(trace_id, trace)
 
     def add_round(self, trace_id: str, round_no: int, data: dict):
         trace = self._read(trace_id)

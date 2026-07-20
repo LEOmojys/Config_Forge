@@ -1,0 +1,231 @@
+{
+  "cases": [
+    {
+      "id": "skill_fire_aoe",
+      "description": "Fire AOE skill obeys element and shape constraints.",
+      "job_type": "skill",
+      "requirement": "生成一个火元素范围伤害技能，冷却时间合理",
+      "modes": ["mock", "live"],
+      "tags": ["skill", "single", "semantic"],
+      "repeat": 1,
+      "expected": {
+        "count": 1,
+        "skill": {
+          "elements": ["fire"],
+          "is_aoe": true,
+          "min_skills": 1,
+          "cooldown": {"min": 0, "max": 120}
+        }
+      }
+    },
+    {
+      "id": "skill_ice_ultimate",
+      "description": "Ultimate skill semantics and schema limits.",
+      "job_type": "skill",
+      "requirement": "生成一个冰元素群体大招，带有较长冷却",
+      "modes": ["mock", "live"],
+      "tags": ["skill", "single", "semantic"],
+      "repeat": 1,
+      "expected": {
+        "count": 1,
+        "skill": {
+          "types": ["ultimate"],
+          "elements": ["ice"],
+          "is_aoe": true,
+          "min_skills": 1
+        }
+      }
+    },
+    {
+      "id": "skill_batch_three",
+      "description": "Three skills remain unique and artifact-complete.",
+      "job_type": "skill",
+      "requirement": "生成3个不同的风元素技能",
+      "batch_count": 3,
+      "modes": ["mock", "live"],
+      "tags": ["skill", "batch"],
+      "repeat": 1,
+      "expected": {
+        "count": 3,
+        "unique_ids": true,
+        "unique_names": true,
+        "skill": {
+          "elements": ["wind"],
+          "min_skills": 1
+        }
+      }
+    },
+    {
+      "id": "monster_fire_elite_level30",
+      "description": "Elite monster applies type, level, element, skills and loot.",
+      "job_type": "monster",
+      "requirement": "生成一个30级火元素精英怪物，具有技能和掉落物",
+      "modes": ["mock", "live"],
+      "tags": ["monster", "single", "loot", "semantic"],
+      "repeat": 1,
+      "expected": {
+        "count": 1,
+        "monster": {
+          "types": ["elite"],
+          "elements": ["fire"],
+          "level": {"min": 30, "max": 30},
+          "min_skills": 1,
+          "min_loot": 1
+        }
+      }
+    },
+    {
+      "id": "monster_ice_boss",
+      "description": "Boss requires at least two skills and valid loot.",
+      "job_type": "monster",
+      "requirement": "生成一个50级冰元素Boss，至少两个技能并存在掉落物",
+      "modes": ["mock", "live"],
+      "tags": ["monster", "boss", "loot", "semantic"],
+      "repeat": 1,
+      "expected": {
+        "count": 1,
+        "monster": {
+          "types": ["boss"],
+          "elements": ["ice"],
+          "level": {"min": 50, "max": 50},
+          "min_skills": 2,
+          "min_loot": 1
+        }
+      }
+    },
+    {
+      "id": "monster_snow_batch_ten",
+      "description": "Ten snow-mountain monsters are unique, icy and have drops.",
+      "job_type": "monster",
+      "requirement": "生成10种不同的怪物，处于雪山地形，存在掉落物",
+      "batch_count": 10,
+      "modes": ["mock", "live"],
+      "tags": ["monster", "batch", "loot", "terrain", "critical"],
+      "repeat": 1,
+      "expected": {
+        "count": 10,
+        "unique_ids": true,
+        "unique_names": true,
+        "required_text_any": ["雪山", "snow", "冰原", "冰雪"],
+        "monster": {
+          "elements": ["ice"],
+          "min_skills": 1,
+          "min_loot": 1
+        }
+      }
+    },
+    {
+      "id": "quest_main_level10_kill_collect",
+      "description": "Main quest contains both kill and collect objectives.",
+      "job_type": "quest",
+      "requirement": "生成一个10级主线任务，需要击杀怪物并收集道具",
+      "modes": ["mock", "live"],
+      "tags": ["quest", "single", "semantic"],
+      "repeat": 1,
+      "expected": {
+        "count": 1,
+        "quest": {
+          "types": ["main"],
+          "required_level": {"min": 10, "max": 10},
+          "min_objectives": 2,
+          "required_objective_types": ["kill", "collect"]
+        }
+      }
+    },
+    {
+      "id": "quest_daily_collect",
+      "description": "Daily quest includes a collect objective.",
+      "job_type": "quest",
+      "requirement": "生成一个日常任务，要求收集材料",
+      "modes": ["mock", "live"],
+      "tags": ["quest", "single", "semantic"],
+      "repeat": 1,
+      "expected": {
+        "count": 1,
+        "quest": {
+          "types": ["daily"],
+          "min_objectives": 2,
+          "required_objective_types": ["collect"]
+        }
+      }
+    },
+    {
+      "id": "quest_batch_three",
+      "description": "Three quests produce unique IDs and complete artifacts.",
+      "job_type": "quest",
+      "requirement": "生成3个不同的支线探索任务",
+      "batch_count": 3,
+      "modes": ["mock", "live"],
+      "tags": ["quest", "batch"],
+      "repeat": 1,
+      "expected": {
+        "count": 3,
+        "unique_ids": true,
+        "unique_names": true,
+        "quest": {
+          "types": ["side"],
+          "min_objectives": 2
+        }
+      }
+    },
+    {
+      "id": "live_summoner_contract",
+      "description": "Live model must materialize summon configuration, not only mention summoning.",
+      "job_type": "monster",
+      "requirement": "生成一个雷元素召唤型精英怪，必须包含召唤物配置、召唤技能和掉落物",
+      "modes": ["live"],
+      "tags": ["monster", "live", "summon", "critical"],
+      "repeat": 3,
+      "expected": {
+        "count": 1,
+        "monster": {
+          "types": ["elite"],
+          "elements": ["thunder"],
+          "min_skills": 1,
+          "min_loot": 1,
+          "require_summon": true
+        }
+      }
+    },
+    {
+      "id": "live_boss_batch_diversity",
+      "description": "Live batch checks semantic diversity for five bosses.",
+      "job_type": "monster",
+      "requirement": "生成5个不同机制的虚数Boss，每个至少3个技能并存在掉落物",
+      "batch_count": 5,
+      "modes": ["live"],
+      "tags": ["monster", "live", "batch", "boss", "critical"],
+      "repeat": 3,
+      "expected": {
+        "count": 5,
+        "unique_ids": true,
+        "unique_names": true,
+        "monster": {
+          "types": ["boss"],
+          "elements": ["imaginary"],
+          "min_skills": 3,
+          "min_loot": 1
+        }
+      }
+    },
+    {
+      "id": "live_critic_quest",
+      "description": "Full live pipeline with heterogeneous critic.",
+      "job_type": "quest",
+      "requirement": "生成一个20级挑战任务，包含击杀、收集和探索目标",
+      "enable_critic": true,
+      "modes": ["live"],
+      "tags": ["quest", "live", "critic", "critical"],
+      "repeat": 3,
+      "expected": {
+        "count": 1,
+        "quest": {
+          "types": ["challenge"],
+          "required_level": {"min": 20, "max": 20},
+          "min_objectives": 3,
+          "required_objective_types": ["kill", "collect", "explore"]
+        }
+      }
+    }
+  ]
+}

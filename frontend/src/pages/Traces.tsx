@@ -69,9 +69,14 @@ export default function Traces() {
     { title: 'Requirement', dataIndex: 'requirement', key: 'req', ellipsis: true },
     {
       title: 'Status', dataIndex: 'status', key: 'status', width: 120,
-      render: (v: string) => <Tag color={v === 'passed' ? 'green' : v === 'need_human' ? 'orange' : 'blue'}>{v}</Tag>,
+      render: (v: string) => <Tag color={v === 'passed' ? 'green' : ['partial', 'need_human'].includes(v) ? 'orange' : v === 'failed' ? 'red' : 'blue'}>{v}</Tag>,
     },
-    { title: 'Rounds', dataIndex: 'rounds', key: 'rounds', width: 60, render: (_: any, r: any) => r.rounds?.length || '-' },
+    {
+      title: 'Progress', dataIndex: 'rounds', key: 'rounds', width: 90,
+      render: (_: any, r: any) => r.is_batch
+        ? `${r.batch_items?.length || 0}/${r.batch_count}`
+        : r.rounds?.length || '-',
+    },
     { title: 'Created', dataIndex: 'created_at', key: 'ts', width: 180, render: (v: string) => v?.slice(0, 19).replace('T', ' ') },
     {
       title: '', key: 'action', width: 100,
@@ -115,8 +120,29 @@ export default function Traces() {
             <Space style={{ marginBottom: 16 }}>
               <Tag color={detail.status === 'passed' ? 'green' : 'orange'}>{detail.status}</Tag>
               <Tag>{detail.job_type}</Tag>
+              {detail.is_batch && <Tag color="blue">Batch {detail.batch_items?.length || 0}/{detail.batch_count}</Tag>}
             </Space>
             <Typography.Paragraph style={{ color: '#aaa' }}>{detail.requirement}</Typography.Paragraph>
+            {detail.is_batch && (
+              <Table
+                dataSource={detail.batch_items || []}
+                rowKey={(row: any) => row.trace_id || String(row.index)}
+                size="small"
+                pagination={false}
+                scroll={{ x: 'max-content' }}
+                style={{ marginBottom: 16 }}
+                columns={[
+                  { title: '#', dataIndex: 'index', key: 'index', width: 50 },
+                  { title: 'Name', dataIndex: 'name', key: 'name', ellipsis: true },
+                  { title: 'ID', dataIndex: 'id', key: 'id', ellipsis: true },
+                  {
+                    title: 'Status', dataIndex: 'status', key: 'status', width: 100,
+                    render: (value: string) => <Tag color={value === 'passed' ? 'green' : 'red'}>{value}</Tag>,
+                  },
+                  { title: 'Trace', dataIndex: 'trace_id', key: 'trace_id', ellipsis: true },
+                ]}
+              />
+            )}
             {finalBundle && (
               <Collapse style={{ background: '#1a1a1a', marginBottom: 16 }} defaultActiveKey={['bundle']} items={[{
                 key: 'bundle',

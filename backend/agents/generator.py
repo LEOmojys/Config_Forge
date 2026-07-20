@@ -16,7 +16,6 @@ class GeneratorAgent:
     def __init__(self, provider: LLMProvider, seed_store):
         self.provider = provider
         self.seed = seed_store
-        self._seed_context = build_seed_context(seed_store)
 
     def generate_skill(self, requirement: str, feedback: str = "") -> SkillBundle:
         return self._generate(
@@ -43,7 +42,9 @@ class GeneratorAgent:
         )
 
     def _generate(self, requirement: str, job_type: str, schema: type[BaseModel], feedback: str) -> BaseModel:
-        system_prompt = GENERATOR_SYSTEM_PROMPT.replace("{seed_context}", self._seed_context)
+        self.seed.load()
+        seed_context = build_seed_context(self.seed)
+        system_prompt = GENERATOR_SYSTEM_PROMPT.replace("{seed_context}", seed_context)
         schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
         user_prompt = build_generator_user_prompt(requirement, job_type, schema_json, feedback)
         return self.provider.generate_structured(system_prompt, user_prompt, schema, max_retries=2)

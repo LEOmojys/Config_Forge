@@ -1,6 +1,6 @@
 const API_BASE = '/api'
 
-export async function generate(req: { job_type: string; requirement: string; enable_critic: boolean }) {
+export async function generate(req: { job_type: string; requirement: string; enable_critic: boolean; batch_count?: number }) {
   const res = await fetch(`${API_BASE}/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

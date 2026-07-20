@@ -1,7 +1,6 @@
 import { useState, useRef } from 'react'
-import { Card, Form, Select, Input, Button, Switch, Space, Tag, Typography, Divider, Alert, Collapse, Steps, Timeline } from 'antd'
+import { Card, Form, Select, Input, InputNumber, Button, Switch, Space, Tag, Typography, Divider, Alert, Collapse, Timeline, Table, Progress } from 'antd'
 import { SendOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined } from '@ant-design/icons'
-import { generate } from '../api/client'
 
 const { TextArea } = Input
 
@@ -104,6 +103,34 @@ export default function Workbench() {
       let children: React.ReactNode = null
 
       switch (e.type) {
+        case 'batch_start':
+          return {
+            color: 'blue',
+            dot: <Tag color="blue">BATCH</Tag>,
+            children: <span style={{ color: '#ccc' }}>Batch started: {d.total} {d.job_type} items</span>,
+          }
+        case 'batch_item_start':
+          return {
+            color,
+            dot: icon,
+            children: <span style={{ color: '#ccc' }}>Generating item {d.index}/{d.total}...</span>,
+          }
+        case 'batch_item_done':
+          return {
+            color: d.status === 'passed' ? 'green' : 'orange',
+            dot: <CheckCircleOutlined />,
+            children: <span style={{ color: d.status === 'passed' ? '#52c41a' : '#faad14' }}>
+              Item {d.index}/{d.total}: {d.name || d.id || d.trace_id} ({d.status})
+            </span>,
+          }
+        case 'batch_item_error':
+          return {
+            color: 'red',
+            dot: <CloseCircleOutlined />,
+            children: <span style={{ color: '#ff4d4f' }}>
+              Item {d.index}/{d.total} failed: {d.error}
+            </span>,
+          }
         case 'round_start':
           return { color: 'gray', dot: <Tag>R{d.round}</Tag>, children: <span style={{ color: '#888' }}>Round {d.round} start</span> }
         case 'generating':
@@ -140,6 +167,15 @@ export default function Workbench() {
             </span>,
           }
         case 'done':
+          if (d.is_batch) {
+            return {
+              color: d.status === 'passed' ? 'green' : 'orange',
+              dot: d.status === 'passed' ? <CheckCircleOutlined /> : <CloseCircleOutlined />,
+              children: <Tag color={d.status === 'passed' ? 'green' : 'orange'}>
+                Batch {d.status}: {d.succeeded}/{d.batch_count} completed
+              </Tag>,
+            }
+          }
           return {
             color: d.status === 'passed' ? 'green' : 'orange',
             dot: d.status === 'passed' ? <CheckCircleOutlined /> : <CloseCircleOutlined />,
@@ -167,6 +203,9 @@ export default function Workbench() {
             <Form.Item label="Requirement" name="requirement" rules={[{ required: true, min: 3 }]}>
               <TextArea rows={4} placeholder="e.g. Generate a level 30 fire-element elite monster with high HP and summoner AI" />
             </Form.Item>
+            <Form.Item label="Batch Count" name="batch_count">
+              <InputNumber min={1} max={20} precision={0} placeholder="Fallback when requirement has no count" style={{ width: '100%' }} />
+            </Form.Item>
             <Form.Item label="Enable Critic" name="enable_critic" valuePropName="checked">
               <Switch />
             </Form.Item>
@@ -186,17 +225,47 @@ export default function Workbench() {
           )}
 
           {result && (
-            <Card title={`Result: ${result.status === 'passed' ? 'Passed' : 'Needs Review'}`} style={{ background: '#1f1f1f', border: '1px solid #303030' }}>
-              <Space style={{ marginBottom: 12 }}>
+            <Card title={`Result: ${result.status === 'passed' ? 'Passed' : result.status === 'partial' ? 'Partial' : 'Needs Review'}`} style={{ background: '#1f1f1f', border: '1px solid #303030' }}>
+              <Space style={{ marginBottom: 12 }} wrap>
                 <Tag color={result.status === 'passed' ? 'green' : 'orange'}>{result.status}</Tag>
-                <Tag>Rounds: {result.rounds}</Tag>
+                {result.is_batch
+                  ? <Tag>Items: {result.succeeded}/{result.batch_count}</Tag>
+                  : <Tag>Rounds: {result.rounds}</Tag>}
                 <Tag color="blue">{result.type}</Tag>
               </Space>
+              {result.is_batch && (
+                <Progress
+                  percent={Math.round((result.succeeded / result.batch_count) * 100)}
+                  status={result.failed > 0 ? 'exception' : 'success'}
+                  style={{ marginBottom: 12 }}
+                />
+              )}
               <Collapse
                 items={[
+                  ...(result.is_batch ? [{
+                    key: 'items',
+                    label: `Batch Items (${result.items?.length || 0})`,
+                    children: <Table
+                      dataSource={result.items || []}
+                      rowKey={(row: any) => row.trace_id || String(row.index)}
+                      size="small"
+                      pagination={false}
+                      scroll={{ x: 'max-content' }}
+                      columns={[
+                        { title: '#', dataIndex: 'index', key: 'index', width: 50 },
+                        { title: 'Name', dataIndex: 'name', key: 'name', ellipsis: true },
+                        { title: 'ID', dataIndex: 'id', key: 'id', ellipsis: true },
+                        {
+                          title: 'Status', dataIndex: 'status', key: 'status', width: 100,
+                          render: (value: string) => <Tag color={value === 'passed' ? 'green' : 'red'}>{value}</Tag>,
+                        },
+                        { title: 'Trace', dataIndex: 'trace_id', key: 'trace_id', ellipsis: true },
+                      ]}
+                    />,
+                  }] : []),
                   {
                     key: 'json',
-                    label: 'Generated JSON',
+                    label: result.is_batch ? `Generated JSON (${result.succeeded} bundles)` : 'Generated JSON',
                     children: <pre style={{ color: '#ccc', fontSize: 12, maxHeight: 500, overflow: 'auto' }}>{JSON.stringify(result.bundle, null, 2)}</pre>,
                   },
                   {

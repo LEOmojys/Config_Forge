@@ -22,25 +22,25 @@ class Orchestrator:
     def generate_skill(self, requirement: str, enable_critic: bool = True,
                        skip_validation: bool = False, dry_run: bool = False,
                        job_id: str = None, trace_id: str = None,
-                       close_events: bool = True) -> dict:
-        return self._run("skill", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events)
+                       close_events: bool = True, emit_events: bool = True) -> dict:
+        return self._run("skill", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events, emit_events)
 
     def generate_monster(self, requirement: str, enable_critic: bool = True,
                          skip_validation: bool = False, dry_run: bool = False,
                          job_id: str = None, trace_id: str = None,
-                         close_events: bool = True) -> dict:
-        return self._run("monster", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events)
+                         close_events: bool = True, emit_events: bool = True) -> dict:
+        return self._run("monster", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events, emit_events)
 
     def generate_quest(self, requirement: str, enable_critic: bool = True,
                        skip_validation: bool = False, dry_run: bool = False,
                        job_id: str = None, trace_id: str = None,
-                       close_events: bool = True) -> dict:
-        return self._run("quest", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events)
+                       close_events: bool = True, emit_events: bool = True) -> dict:
+        return self._run("quest", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events, emit_events)
 
     def _run(self, job_type: str, requirement: str, enable_critic: bool,
              skip_validation: bool = False, dry_run: bool = False,
              job_id: str = None, trace_id: str = None,
-             close_events: bool = True) -> dict:
+             close_events: bool = True, emit_events: bool = True) -> dict:
         self.seed.load()
         if dry_run:
             trace_id, job_id = None, None
@@ -54,7 +54,7 @@ class Orchestrator:
         bundle = None  # initialized for linter
 
         def _emit(etype: str, data: dict):
-            if self.events and job_id:
+            if emit_events and self.events and job_id:
                 self.events.push(job_id, etype, data)
 
         _emit("start", {"job_type": job_type, "requirement": requirement, "job_id": job_id})
@@ -153,7 +153,7 @@ class Orchestrator:
             "bundle": final_bundle.model_dump(mode="json", exclude_none=True),
             "type": job_type,
         }
-        if close_events and self.events and job_id:
+        if emit_events and close_events and self.events and job_id:
             self.events.mark_done(job_id, result)
 
         return result

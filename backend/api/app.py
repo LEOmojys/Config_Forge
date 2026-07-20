@@ -5,7 +5,7 @@ Provider Selection Strategy (by env var):
 - DEEPSEEK_API_KEY set → DeepSeekProvider for critic (异构模型交叉审查)
 - Neither set          → MockLLMProvider (MVP mode, 无需 API Key)
 """
-import sys, os, asyncio
+import sys, os, asyncio, re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -112,10 +112,208 @@ class GenerateRequest(BaseModel):
     job_type: str = Field(..., pattern="^(skill|monster|quest)$")
     requirement: str = Field(..., min_length=3, max_length=500)
     enable_critic: bool = True
+    batch_count: Optional[int] = Field(default=None, ge=1, le=20)
 
 
 class TableRowRequest(BaseModel):
     row: dict[str, Any]
+
+
+def _chinese_number(value: str) -> Optional[int]:
+    digits = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9}
+    if value in digits:
+        return digits[value]
+    if value == "十":
+        return 10
+    if "十" in value:
+        left, right = value.split("十", 1)
+        tens = digits.get(left, 1) if left else 1
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
+    return None
+
+
+def _resolve_batch_count(req: GenerateRequest) -> int:
+    requirement = req.requirement
+    numeric_patterns = [
+        r"(?:生成|创建|设计|制作)\s*(\d{1,2})\s*(?:种|个|只|份|套)",
+        r"(\d{1,2})\s*(?:种|个|只|份|套)\s*(?:不同的?)?\s*(?:怪物|技能|任务)",
+        r"(?:generate|create|produce)\s+(\d{1,2})\b",
+    ]
+    for pattern in numeric_patterns:
+        match = re.search(pattern, requirement, flags=re.IGNORECASE)
+        if match:
+            return max(1, min(int(match.group(1)), 20))
+
+    chinese_match = re.search(
+        r"(?:生成|创建|设计|制作)\s*([一二三四五六七八九十]{1,3})\s*(?:种|个|只|份|套)",
+        requirement,
+    )
+    if chinese_match:
+        count = _chinese_number(chinese_match.group(1))
+        if count:
+            return max(1, min(count, 20))
+    return req.batch_count if req.batch_count is not None else 1
+
+
+def _generate_one(job_type: str, requirement: str, enable_critic: bool,
+                  job_id: str, trace_id: str, emit_events: bool = True) -> dict:
+    kwargs = {
+        "job_id": job_id,
+        "trace_id": trace_id,
+        "close_events": False,
+        "emit_events": emit_events,
+    }
+    if job_type == "skill":
+        return orchestrator.generate_skill(requirement, enable_critic, **kwargs)
+    if job_type == "monster":
+        return orchestrator.generate_monster(requirement, enable_critic, **kwargs)
+    return orchestrator.generate_quest(requirement, enable_critic, **kwargs)
+
+
+def _bundle_identity(job_type: str, bundle: dict) -> dict:
+    if job_type == "monster":
+        config = bundle.get("monster_config") or {}
+        return {"id": config.get("monster_id"), "name": config.get("name")}
+    if job_type == "quest":
+        config = bundle.get("quest_template") or {}
+        return {"id": config.get("quest_id"), "name": config.get("name")}
+    skills = bundle.get("skills") or []
+    first = skills[0] if skills else {}
+    return {"id": first.get("skill_id"), "name": first.get("name")}
+
+
+def _batch_item_requirement(req: GenerateRequest, index: int, total: int,
+                            parent_trace_id: str, previous: list[dict]) -> str:
+    unique_token = f"b{parent_trace_id[-6:]}_{index:02d}"
+    previous_text = ", ".join(
+        f"{item.get('name') or 'unnamed'}({item.get('id') or 'no_id'})"
+        for item in previous
+    ) or "无"
+    loot_rule = ""
+    if req.job_type == "monster":
+        loot_rule = (
+            "\n怪物必须提供至少 1 条 monster_loot，item_id 只能从可用道具中选择，"
+            "且 loot_group_id 必须与 monster_config.loot_group_id 一致。"
+        )
+    return (
+        f"【原始批量需求】{req.requirement}\n"
+        f"【当前子任务】这是批次中的第 {index}/{total} 项；只生成 1 个 {req.job_type} 配置。\n"
+        f"【差异化要求】本项必须与其他项在名称、主 ID、数值、技能/目标组合上明显不同。"
+        f"所有新建主 ID 应包含唯一标记 {unique_token}。\n"
+        f"【已生成项，禁止重复】{previous_text}"
+        f"{loot_rule}"
+    )
+
+
+def _run_batch_generation(req: GenerateRequest, batch_count: int,
+                          parent_job_id: str, parent_trace_id: str) -> dict:
+    event_bus.push(parent_job_id, "batch_start", {
+        "total": batch_count,
+        "job_type": req.job_type,
+    })
+    items = []
+    identities: list[dict] = []
+    all_csv_files: set[str] = set()
+
+    for index in range(1, batch_count + 1):
+        child_requirement = _batch_item_requirement(
+            req, index, batch_count, parent_trace_id, identities
+        )
+        child_trace_id = trace_store.create(req.job_type, child_requirement, metadata={
+            "parent_trace_id": parent_trace_id,
+            "batch_index": index,
+            "batch_total": batch_count,
+        })
+        child_job_id = child_trace_id.replace("trace_", "j_")
+        event_bus.push(parent_job_id, "batch_item_start", {
+            "index": index,
+            "total": batch_count,
+            "trace_id": child_trace_id,
+        })
+
+        try:
+            child = _generate_one(
+                req.job_type,
+                child_requirement,
+                req.enable_critic,
+                child_job_id,
+                child_trace_id,
+                emit_events=False,
+            )
+            child["csv_files"] = [
+                str(path) for path in _export(child["bundle"], req.job_type)
+            ]
+            all_csv_files.update(child["csv_files"])
+            identity = _bundle_identity(req.job_type, child["bundle"])
+            identities.append(identity)
+            item = {
+                "index": index,
+                **child,
+                **identity,
+            }
+            items.append(item)
+            summary = {
+                "index": index,
+                "job_id": child_job_id,
+                "trace_id": child_trace_id,
+                "status": child["status"],
+                **identity,
+            }
+            trace_store.add_batch_item(parent_trace_id, summary)
+            event_bus.push(parent_job_id, "batch_item_done", {
+                **summary,
+                "total": batch_count,
+            })
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            trace_store.complete(child_trace_id, "failed", error=str(exc))
+            item = {
+                "index": index,
+                "job_id": child_job_id,
+                "trace_id": child_trace_id,
+                "status": "failed",
+                "error": str(exc),
+            }
+            items.append(item)
+            trace_store.add_batch_item(parent_trace_id, item)
+            event_bus.push(parent_job_id, "batch_item_error", {
+                **item,
+                "total": batch_count,
+            })
+
+    succeeded = sum(item.get("status") == "passed" for item in items)
+    failed = batch_count - succeeded
+    status = "passed" if failed == 0 else "partial" if succeeded else "failed"
+    summary_items = [
+        {key: item.get(key) for key in ("index", "job_id", "trace_id", "status", "id", "name", "error")}
+        for item in items
+    ]
+    result = {
+        "job_id": parent_job_id,
+        "trace_id": parent_trace_id,
+        "status": status,
+        "type": req.job_type,
+        "is_batch": True,
+        "batch_count": batch_count,
+        "succeeded": succeeded,
+        "failed": failed,
+        "rounds": sum(item.get("rounds", 0) for item in items),
+        "items": items,
+        "bundle": [item["bundle"] for item in items if item.get("bundle")],
+        "csv_files": sorted(all_csv_files),
+    }
+    trace_store.complete(parent_trace_id, status, {
+        "job_id": parent_job_id,
+        "type": req.job_type,
+        "batch_count": batch_count,
+        "succeeded": succeeded,
+        "failed": failed,
+        "items": summary_items,
+    })
+    return result
 
 
 # ═══════════════ API Routes ═══════════════════════════
@@ -188,42 +386,54 @@ async def test_doubao():
 async def generate(req: GenerateRequest):
     """Start generation in background, return job_id immediately for SSE streaming."""
     try:
-        import uuid
+        batch_count = _resolve_batch_count(req)
         # Pre-allocate IDs so SSE can start listening immediately
-        trace_id = trace_store.create(req.job_type, req.requirement)
+        trace_id = trace_store.create(req.job_type, req.requirement, metadata={
+            "is_batch": batch_count > 1,
+            "batch_count": batch_count,
+            "batch_items": [],
+        })
         job_id = trace_id.replace("trace_", "j_")
 
         # Push initial start event
         event_bus.push(job_id, "start", {
-            "job_type": req.job_type, "requirement": req.requirement, "job_id": job_id
+            "job_type": req.job_type,
+            "requirement": req.requirement,
+            "job_id": job_id,
+            "batch_count": batch_count,
         })
 
         # Run generation in background thread
         def _run_orch():
             try:
-                if req.job_type == "skill":
-                    result = orchestrator.generate_skill(req.requirement, req.enable_critic,
-                                                         job_id=job_id, trace_id=trace_id,
-                                                         close_events=False)
-                elif req.job_type == "monster":
-                    result = orchestrator.generate_monster(req.requirement, req.enable_critic,
-                                                          job_id=job_id, trace_id=trace_id,
-                                                          close_events=False)
+                if batch_count > 1:
+                    result = _run_batch_generation(req, batch_count, job_id, trace_id)
                 else:
-                    result = orchestrator.generate_quest(req.requirement, req.enable_critic,
-                                                         job_id=job_id, trace_id=trace_id,
-                                                         close_events=False)
-                # Export CSV after generation
-                result["csv_files"] = [str(p) for p in _export(result["bundle"], req.job_type)]
+                    result = _generate_one(
+                        req.job_type,
+                        req.requirement,
+                        req.enable_critic,
+                        job_id,
+                        trace_id,
+                    )
+                    result["csv_files"] = [
+                        str(path) for path in _export(result["bundle"], req.job_type)
+                    ]
                 event_bus.mark_done(job_id, result)
             except Exception as e:
                 import traceback; traceback.print_exc()
+                trace_store.complete(trace_id, "failed", error=str(e))
                 event_bus.mark_error(job_id, str(e))
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         loop.run_in_executor(None, _run_orch)
 
-        return JSONResponse({"job_id": job_id, "trace_id": trace_id, "status": "started"})
+        return JSONResponse({
+            "job_id": job_id,
+            "trace_id": trace_id,
+            "status": "started",
+            "batch_count": batch_count,
+        })
     except Exception as e:
         import traceback; traceback.print_exc()
         raise HTTPException(500, detail=str(e))
@@ -259,7 +469,7 @@ async def delete_trace(trace_id: str):
     return {"status": "ok", "deleted": 1, "trace_id": trace_id}
 
 @app.delete("/api/traces")
-async def clear_traces(status: Optional[str] = Query(None, pattern="^(running|passed|need_human|failed|error)$")):
+async def clear_traces(status: Optional[str] = Query(None, pattern="^(running|passed|partial|need_human|failed|error)$")):
     deleted = trace_store.clear(status=status)
     return {"status": "ok", "deleted": deleted, "filter": {"status": status}}
 
