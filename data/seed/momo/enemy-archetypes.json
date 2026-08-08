@@ -1,0 +1,6 @@
+[
+  {"enemy_id": "enemy_crawler", "archetype": "crawler", "role": "normal_melee", "asset_id": "enemy_scrap_crawler", "tuning_profile_id": "region_1_normal", "max_health": 24, "move_speed": 2.35, "radius": 0.48, "touch_range": 0.95, "preferred_range": 0.0, "damage": 2},
+  {"enemy_id": "enemy_shooter", "archetype": "shooter", "role": "normal_ranged", "asset_id": "enemy_rivet_shooter", "tuning_profile_id": "region_1_normal", "max_health": 18, "move_speed": 1.45, "radius": 0.45, "touch_range": 0.0, "preferred_range": 5.2, "damage": 1},
+  {"enemy_id": "enemy_elite", "archetype": "elite", "role": "elite", "asset_id": "enemy_shield_hammer_guard", "tuning_profile_id": "region_1_elite", "max_health": 180, "move_speed": 1.65, "radius": 0.75, "touch_range": 1.35, "preferred_range": 0.0, "damage": 3},
+  {"enemy_id": "enemy_boss", "archetype": "boss", "role": "boss", "asset_id": "enemy_furnace_overseer", "tuning_profile_id": "region_1_boss", "max_health": 520, "move_speed": 1.25, "radius": 1.05, "touch_range": 1.65, "preferred_range": 0.0, "damage": 3}
+]

@@ -1,0 +1,22 @@
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+
+output/
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local notes, documentation drafts, and tool metadata
+docs/
+frontend/DESIGN.md
+*QA.md
+.idea/
+.omo/

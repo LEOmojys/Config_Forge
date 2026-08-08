@@ -6,6 +6,7 @@ import Workbench from './pages/Workbench'
 import Tables from './pages/Tables'
 import Traces from './pages/Traces'
 import Evaluation from './pages/Evaluation'
+import './app.css'
 
 const { Header, Sider, Content } = Layout
 
@@ -33,8 +34,8 @@ export default function App() {
   }, [currentPath])
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider width={200} style={{ background: '#141414', borderRight: '1px solid #303030' }}>
+    <Layout className="configforge-shell" style={{ minHeight: '100dvh' }}>
+      <Sider className="configforge-sider" width={200} style={{ background: '#141414', borderRight: '1px solid #303030' }}>
         <div style={{ padding: '16px', color: '#fff', fontWeight: 700, fontSize: 18, textAlign: 'center' }}>
           ConfigForge
         </div>
@@ -50,7 +51,7 @@ export default function App() {
         />
       </Sider>
       <Layout>
-        <Content style={{ padding: 24, background: '#1a1a1a', minHeight: '100vh' }}>
+        <Content className="configforge-content" style={{ padding: 24, background: '#1a1a1a', minHeight: '100dvh' }}>
           {location.pathname !== currentPath && <Navigate to="/" replace />}
           {pages.map(page => mountedPages.includes(page.path) && (
             <div key={page.path} style={{ display: page.path === currentPath ? 'block' : 'none' }}>

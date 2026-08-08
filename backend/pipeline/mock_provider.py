@@ -3,8 +3,9 @@
 In MVP mode, this provider returns template-based bundles with randomized
 variations. For production, replace with real API calls to Doubao/DeepSeek.
 """
-import random
 import copy
+import hashlib
+import random
 import uuid
 import re
 from typing import TypeVar, Type
@@ -17,6 +18,19 @@ from ..schemas.quest import QuestTemplateConfig, QuestObjectiveConfig
 from ..schemas.common import (
     ElementId, MonsterType, AIBehavior, SkillType, QuestType, ObjectiveType,
 )
+from ..schemas.momo import (
+    MomoArchetype,
+    MomoAttackCategory,
+    MomoAttackDefinition,
+    MomoEncounterBundle,
+    MomoEncounterDefinition,
+    MomoEncounterType,
+    MomoEncounterWave,
+    MomoEnemyBundle,
+    MomoEnemyDefinition,
+    MomoRole,
+    MomoSpawn,
+)
 
 
 T = TypeVar("T")
@@ -25,8 +39,9 @@ T = TypeVar("T")
 class MockLLMProvider:
     """Deterministic-ish mock that generates plausible bundles for MVP demo."""
 
-    def __init__(self, seed_store):
+    def __init__(self, seed_store, momo_seed_store=None):
         self.seed = seed_store
+        self.momo_seed = momo_seed_store
         self._rng = random.Random()
 
     def generate_skill_bundle(self, requirement: str, feedback: str = "") -> SkillBundle:
@@ -150,8 +165,196 @@ class MockLLMProvider:
             ))
         return QuestBundle(quest_template=qt, quest_objectives=objectives)
 
+    def generate_momo_enemy_bundle(self, requirement: str, feedback: str = "") -> MomoEnemyBundle:
+        seed = self._momo_seed()
+        rng, token = self._momo_rng(requirement)
+        archetype = self._momo_archetype(requirement)
+        profile = seed.get_archetype(archetype)
+        enemy_id = f"momo_enemy_{archetype.value}_{token}"
+        role_name = archetype.value.replace("_", " ").title()
+        enemy = MomoEnemyDefinition(
+            enemy_id=enemy_id,
+            region_id="region_1_foundry",
+            role=profile.role,
+            archetype=archetype,
+            name=f"Foundry {role_name} {token[:5]}",
+            description=f"A generated MoMo {archetype.value} designed for the foundry region.",
+            max_health=profile.max_health + rng.randint(0, max(2, profile.max_health // 5)),
+            move_speed=round(profile.move_speed * rng.uniform(0.96, 1.04), 2),
+            radius=profile.radius,
+            touch_range=profile.touch_range,
+            preferred_range=profile.preferred_range,
+            damage=profile.damage + rng.randint(0, 1),
+            telegraph_time=0.72 if archetype == MomoArchetype.BOSS else 0.4,
+            active_time=0.2,
+            recovery_time=1.05 if archetype == MomoArchetype.BOSS else 0.72,
+            cooldown=1.8 if archetype == MomoArchetype.BOSS else 1.3,
+            tuning_profile_id=profile.tuning_profile_id,
+            asset_id=profile.asset_id,
+        )
+        attacks = self._momo_attacks(enemy, token)
+        return MomoEnemyBundle(enemy=enemy, attacks=attacks)
+
+    def generate_momo_encounter_bundle(self, requirement: str, feedback: str = "") -> MomoEncounterBundle:
+        self._momo_seed()
+        _, token = self._momo_rng(requirement)
+        archetype = self._momo_archetype(requirement)
+        encounter_type = self._momo_encounter_type(archetype)
+        is_boss = encounter_type == MomoEncounterType.BOSS
+        encounter_id = f"momo_encounter_foundry_{token}"
+        encounter = MomoEncounterDefinition(
+            encounter_id=encounter_id,
+            region_id="region_1_foundry",
+            encounter_type=encounter_type,
+            room_id="foundry_boss" if is_boss else "open_court",
+            name=f"Foundry {encounter_type.value.title()} Encounter {token[:5]}",
+            reward_gold=40 if is_boss else 30 if encounter_type == MomoEncounterType.ELITE else 14,
+            combat_seed_policy="derived",
+            max_alive_enemies=1 if is_boss else 5 if encounter_type == MomoEncounterType.NORMAL else 3,
+            description="A generated MoMo encounter with room-safe spawn assignments.",
+        )
+        spawns = self._momo_spawns(encounter_type)
+        wave = MomoEncounterWave(encounter_id=encounter_id, wave_index=1, spawns=spawns)
+        return MomoEncounterBundle(encounter=encounter, waves=[wave])
+
     def _pick(self, items: list):
         return self._rng.choice(items)
+
+    def _momo_seed(self):
+        if self.momo_seed is None:
+            raise RuntimeError("MoMo seed store is required for MoMo generation")
+        self.momo_seed.load()
+        return self.momo_seed
+
+    @staticmethod
+    def _momo_rng(requirement: str) -> tuple[random.Random, str]:
+        digest = hashlib.sha256(requirement.encode("utf-8")).hexdigest()
+        return random.Random(int(digest[:16], 16)), digest[:8]
+
+    @staticmethod
+    def _momo_archetype(requirement: str) -> MomoArchetype:
+        lowered = requirement.casefold()
+        choices = (
+            (MomoArchetype.BOSS, ("boss", "overseer", "leader", "首领", "监工")),
+            (MomoArchetype.ELITE, ("elite", "精英", "guard")),
+            (MomoArchetype.SHOOTER, ("shooter", "ranged", "远程", "射手")),
+        )
+        for archetype, tokens in choices:
+            if any(token in lowered for token in tokens):
+                return archetype
+        return MomoArchetype.CRAWLER
+
+    @staticmethod
+    def _momo_encounter_type(archetype: MomoArchetype) -> MomoEncounterType:
+        match archetype:
+            case MomoArchetype.BOSS:
+                return MomoEncounterType.BOSS
+            case MomoArchetype.ELITE:
+                return MomoEncounterType.ELITE
+            case MomoArchetype.CRAWLER | MomoArchetype.SHOOTER:
+                return MomoEncounterType.NORMAL
+
+    @staticmethod
+    def _momo_attacks(enemy: MomoEnemyDefinition, token: str) -> list[MomoAttackDefinition]:
+        direct = MomoAttackDefinition(
+            attack_id=f"momo_attack_{token}_direct",
+            enemy_id=enemy.enemy_id,
+            attack_category=MomoAttackCategory.DIRECT,
+            damage=enemy.damage,
+            telegraph_time=enemy.telegraph_time,
+            active_time=enemy.active_time,
+            recovery_time=enemy.recovery_time,
+            cooldown=enemy.cooldown,
+            max_hits_per_target=1,
+            projectile_type=None,
+            warning_asset_id="enemy_warning_ring",
+            summon_enemy_id=None,
+            phase=1,
+            description="A readable direct-contact attack.",
+        )
+        match enemy.archetype:
+            case MomoArchetype.CRAWLER:
+                return [direct]
+            case MomoArchetype.SHOOTER:
+                return [MockLLMProvider._momo_projectile_attack(enemy, token)]
+            case MomoArchetype.ELITE:
+                return [direct, MockLLMProvider._momo_area_attack(enemy, token)]
+            case MomoArchetype.BOSS:
+                return [direct, MockLLMProvider._momo_projectile_attack(enemy, token), MockLLMProvider._momo_summon_attack(enemy, token)]
+
+    @staticmethod
+    def _momo_projectile_attack(enemy: MomoEnemyDefinition, token: str) -> MomoAttackDefinition:
+        projectile = "enemy_boss_fireball" if enemy.archetype == MomoArchetype.BOSS else "enemy_rivet"
+        return MomoAttackDefinition(
+            attack_id=f"momo_attack_{token}_projectile",
+            enemy_id=enemy.enemy_id,
+            attack_category=MomoAttackCategory.PROJECTILE,
+            damage=enemy.damage,
+            telegraph_time=max(enemy.telegraph_time, 0.5),
+            active_time=enemy.active_time,
+            recovery_time=enemy.recovery_time,
+            cooldown=max(enemy.cooldown, 1.6),
+            max_hits_per_target=1,
+            projectile_type=projectile,
+            warning_asset_id="enemy_warning_ring",
+            summon_enemy_id=None,
+            phase=1,
+            description="A telegraphed projectile attack.",
+        )
+
+    @staticmethod
+    def _momo_area_attack(enemy: MomoEnemyDefinition, token: str) -> MomoAttackDefinition:
+        return MomoAttackDefinition(
+            attack_id=f"momo_attack_{token}_area",
+            enemy_id=enemy.enemy_id,
+            attack_category=MomoAttackCategory.AREA,
+            damage=enemy.damage,
+            telegraph_time=max(enemy.telegraph_time, 0.5),
+            active_time=enemy.active_time,
+            recovery_time=enemy.recovery_time,
+            cooldown=max(enemy.cooldown, 1.8),
+            max_hits_per_target=1,
+            projectile_type=None,
+            warning_asset_id="enemy_warning_ring",
+            summon_enemy_id=None,
+            phase=1,
+            description="A marked area-pressure attack.",
+        )
+
+    @staticmethod
+    def _momo_summon_attack(enemy: MomoEnemyDefinition, token: str) -> MomoAttackDefinition:
+        return MomoAttackDefinition(
+            attack_id=f"momo_attack_{token}_summon",
+            enemy_id=enemy.enemy_id,
+            attack_category=MomoAttackCategory.SUMMON,
+            damage=0,
+            telegraph_time=max(enemy.telegraph_time, 0.6),
+            active_time=enemy.active_time,
+            recovery_time=enemy.recovery_time,
+            cooldown=7.0,
+            max_hits_per_target=0,
+            projectile_type=None,
+            warning_asset_id="enemy_warning_ring",
+            summon_enemy_id="enemy_crawler",
+            phase=2,
+            description="A second-phase crawler reinforcement call.",
+        )
+
+    @staticmethod
+    def _momo_spawns(encounter_type: MomoEncounterType) -> list[MomoSpawn]:
+        match encounter_type:
+            case MomoEncounterType.BOSS:
+                return [MomoSpawn(enemy_id="enemy_boss", count=1, spawn_group="core", spawn_x=0.0, spawn_y=2.8)]
+            case MomoEncounterType.ELITE:
+                return [
+                    MomoSpawn(enemy_id="enemy_elite", count=1, spawn_group="center_guard", spawn_x=0.0, spawn_y=2.6),
+                    MomoSpawn(enemy_id="enemy_crawler", count=2, spawn_group="flankers", spawn_x=-5.0, spawn_y=-2.2),
+                ]
+            case MomoEncounterType.NORMAL:
+                return [
+                    MomoSpawn(enemy_id="enemy_crawler", count=3, spawn_group="north_scrap", spawn_x=-5.2, spawn_y=2.4),
+                    MomoSpawn(enemy_id="enemy_shooter", count=2, spawn_group="south_rivets", spawn_x=5.2, spawn_y=-2.4),
+                ]
 
     @staticmethod
     def _level_from_requirement(requirement: str):

@@ -1,0 +1,8 @@
+{
+  "design_version": "region1-v1",
+  "config_version": "momo-config-001",
+  "min_telegraph_time": 0.2,
+  "min_active_time": 0.1,
+  "max_alive_enemies": 8,
+  "allowed_seed_policies": ["fixed", "derived"]
+}

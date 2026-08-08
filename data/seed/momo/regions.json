@@ -1,0 +1,8 @@
+[
+  {
+    "region_id": "region_1_foundry",
+    "room_ids": ["open_court", "twin_cover", "central_island", "foundry_boss"],
+    "allowed_enemy_ids": ["enemy_crawler", "enemy_shooter", "enemy_elite", "enemy_boss"],
+    "bounds": {"min_x": -7.5, "max_x": 7.5, "min_y": -3.75, "max_y": 3.75}
+  }
+]

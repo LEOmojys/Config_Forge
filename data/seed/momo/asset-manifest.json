@@ -1,0 +1,11 @@
+{
+  "assets": [
+    {"asset_id": "enemy_scrap_crawler", "path": "image/enemies/region1/scrap-crawler-idle-side.png", "kind": "enemy_sprite"},
+    {"asset_id": "enemy_rivet_shooter", "path": "image/enemies/region1/rivet-shooter-idle-side.png", "kind": "enemy_sprite"},
+    {"asset_id": "enemy_shield_hammer_guard", "path": "image/enemies/region1/shield-hammer-guard-idle-side.png", "kind": "enemy_sprite"},
+    {"asset_id": "enemy_furnace_overseer", "path": "image/enemies/region1/furnace-overseer-idle-side.png", "kind": "enemy_sprite"},
+    {"asset_id": "enemy_warning_ring", "path": "image/vfx/enemy-warning-ring.png", "kind": "warning_vfx"},
+    {"asset_id": "enemy_rivet", "path": "image/projectiles/enemy-rivet.png", "kind": "projectile"},
+    {"asset_id": "enemy_boss_fireball", "path": "image/projectiles/boss-fireball.png", "kind": "projectile"}
+  ]
+}

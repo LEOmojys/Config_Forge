@@ -8,7 +8,32 @@ const TYPE_OPTIONS = [
   { value: 'skill', label: 'Skill' },
   { value: 'monster', label: 'Monster' },
   { value: 'quest', label: 'Quest' },
+  { value: 'momo_enemy', label: 'MoMo Enemy' },
+  { value: 'momo_encounter', label: 'MoMo Encounter' },
 ]
+
+const TYPE_DETAILS: Record<string, { placeholder: string; batchHint: string }> = {
+  skill: {
+    placeholder: 'e.g. Generate a fire ultimate skill with high AOE damage',
+    batchHint: 'Fallback when the requirement has no count',
+  },
+  monster: {
+    placeholder: 'e.g. Generate a level 30 fire-element elite monster with high HP and summoner AI',
+    batchHint: 'Fallback when the requirement has no count',
+  },
+  quest: {
+    placeholder: 'e.g. Generate a side quest with kill and collect objectives',
+    batchHint: 'Fallback when the requirement has no count',
+  },
+  momo_enemy: {
+    placeholder: 'e.g. Generate 10 different MoMo foundry enemies, including telegraphed attacks',
+    batchHint: 'Used only when the requirement does not state a quantity',
+  },
+  momo_encounter: {
+    placeholder: 'e.g. Generate a MoMo foundry elite encounter for the central island room',
+    batchHint: 'Used only when the requirement does not state a quantity',
+  },
+}
 
 interface SSEEvent {
   type: string
@@ -18,6 +43,8 @@ interface SSEEvent {
 
 export default function Workbench() {
   const [form] = Form.useForm()
+  const jobType = Form.useWatch('job_type', form) || 'monster'
+  const typeDetails = TYPE_DETAILS[jobType] || TYPE_DETAILS.monster
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
@@ -194,17 +221,17 @@ export default function Workbench() {
   return (
     <div>
       <Typography.Title level={3} style={{ color: '#fff' }}>Generation Workbench</Typography.Title>
-      <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 24 }}>
+      <div className="configforge-workbench-grid" style={{ display: 'grid', gridTemplateColumns: '420px minmax(0, 1fr)', gap: 24 }}>
         <Card title="Requirement" style={{ background: '#1f1f1f', border: '1px solid #303030' }}>
           <Form form={form} layout="vertical" onFinish={handleGenerate} initialValues={{ job_type: 'monster', enable_critic: true }}>
             <Form.Item label="Type" name="job_type" rules={[{ required: true }]}>
               <Select options={TYPE_OPTIONS} />
             </Form.Item>
             <Form.Item label="Requirement" name="requirement" rules={[{ required: true, min: 3 }]}>
-              <TextArea rows={4} placeholder="e.g. Generate a level 30 fire-element elite monster with high HP and summoner AI" />
+              <TextArea rows={4} placeholder={typeDetails.placeholder} />
             </Form.Item>
             <Form.Item label="Batch Count" name="batch_count">
-              <InputNumber min={1} max={20} precision={0} placeholder="Fallback when requirement has no count" style={{ width: '100%' }} />
+              <InputNumber min={1} max={20} precision={0} placeholder={typeDetails.batchHint} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item label="Enable Critic" name="enable_critic" valuePropName="checked">
               <Switch />
@@ -271,8 +298,20 @@ export default function Workbench() {
                   {
                     key: 'csv',
                     label: `CSV Output (${result.csv_files?.length || 0} files)`,
-                    children: <pre style={{ color: '#ccc', fontSize: 12 }}>{(result.csv_files || []).join('\n') || 'No CSV files'}</pre>,
+                    children: <pre style={{ color: '#ccc', fontSize: 12, maxHeight: 180, overflow: 'auto' }}>{(result.csv_files || []).join('\n') || 'No CSV files'}</pre>,
                   },
+                  ...(result.momo_release ? [{
+                    key: 'momo-release',
+                    label: `MoMo Release (${result.momo_release.validation_passed ? 'Validated' : 'Needs Review'})`,
+                    children: <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Typography.Text type="secondary">Release directory</Typography.Text>
+                      <pre style={{ color: '#ccc', fontSize: 12, margin: 0, maxHeight: 120, overflow: 'auto' }}>{result.momo_release.release_dir}</pre>
+                      <Typography.Text type="secondary">Manifest</Typography.Text>
+                      <pre style={{ color: '#ccc', fontSize: 12, margin: 0, maxHeight: 120, overflow: 'auto' }}>{result.momo_release.manifest}</pre>
+                      <Typography.Text type="secondary">Validation report</Typography.Text>
+                      <pre style={{ color: '#ccc', fontSize: 12, margin: 0, maxHeight: 120, overflow: 'auto' }}>{result.momo_release.validation_report}</pre>
+                    </Space>,
+                  }] : []),
                 ]}
                 style={{ background: '#1a1a1a' }}
               />

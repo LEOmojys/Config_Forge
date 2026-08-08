@@ -1,6 +1,7 @@
 """Orchestrator: generation -> validation -> critic -> revision loop."""
 from typing import Optional
 from ..schemas.bundle import SkillBundle, MonsterBundle, QuestBundle
+from ..schemas.momo import MomoEncounterBundle, MomoEnemyBundle
 from ..validators.rule_engine import ValidationResult
 
 MAX_ROUNDS = 3
@@ -10,7 +11,8 @@ class Orchestrator:
     """主编排器：生成 → 校验 → 审查 → 修订循环（硬上限 3 轮）"""
 
     def __init__(self, generator, critic, seed_store,
-                 rule_engine, trace_store, result_store, event_bus=None):
+                 rule_engine, trace_store, result_store, event_bus=None,
+                 momo_rule_engine=None):
         self.generator = generator
         self.critic = critic
         self.seed = seed_store
@@ -18,6 +20,7 @@ class Orchestrator:
         self.traces = trace_store
         self.results = result_store
         self.events = event_bus
+        self.momo_rules = momo_rule_engine
 
     def generate_skill(self, requirement: str, enable_critic: bool = True,
                        skip_validation: bool = False, dry_run: bool = False,
@@ -37,11 +40,27 @@ class Orchestrator:
                        close_events: bool = True, emit_events: bool = True) -> dict:
         return self._run("quest", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events, emit_events)
 
+    def generate_momo_enemy(self, requirement: str, enable_critic: bool = True,
+                            skip_validation: bool = False, dry_run: bool = False,
+                            job_id: str = None, trace_id: str = None,
+                            close_events: bool = True, emit_events: bool = True) -> dict:
+        return self._run("momo_enemy", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events, emit_events)
+
+    def generate_momo_encounter(self, requirement: str, enable_critic: bool = True,
+                                skip_validation: bool = False, dry_run: bool = False,
+                                job_id: str = None, trace_id: str = None,
+                                close_events: bool = True, emit_events: bool = True) -> dict:
+        return self._run("momo_encounter", requirement, enable_critic, skip_validation, dry_run, job_id, trace_id, close_events, emit_events)
+
     def _run(self, job_type: str, requirement: str, enable_critic: bool,
              skip_validation: bool = False, dry_run: bool = False,
              job_id: str = None, trace_id: str = None,
              close_events: bool = True, emit_events: bool = True) -> dict:
-        self.seed.load()
+        is_momo = job_type in {"momo_enemy", "momo_encounter"}
+        if is_momo and self.momo_rules is None:
+            raise RuntimeError("MoMo rule engine is required for MoMo generation")
+        if not is_momo:
+            self.seed.load()
         if dry_run:
             trace_id, job_id = None, None
         else:
@@ -70,9 +89,15 @@ class Orchestrator:
             elif job_type == "monster":
                 bundle = self.generator.generate_monster(requirement, feedback or "")
                 validate_fn = self.rules.validate_monster_bundle
-            else:
+            elif job_type == "quest":
                 bundle = self.generator.generate_quest(requirement, feedback or "")
                 validate_fn = self.rules.validate_quest_bundle
+            elif job_type == "momo_enemy":
+                bundle = self.generator.generate_momo_enemy(requirement, feedback or "")
+                validate_fn = self.momo_rules.validate_enemy_bundle
+            else:
+                bundle = self.generator.generate_momo_encounter(requirement, feedback or "")
+                validate_fn = self.momo_rules.validate_encounter_bundle
 
             _emit("generated", {"round": round_no, "bundle_summary": str(type(bundle).__name__)})
 
@@ -124,7 +149,7 @@ class Orchestrator:
 
             if round_data["passed"]:
                 final_bundle = bundle
-                if not dry_run and hasattr(self.seed, 'register_bundle'):
+                if not dry_run and not is_momo and hasattr(self.seed, 'register_bundle'):
                     self.seed.register_bundle(bundle)
                 break
 
@@ -144,14 +169,26 @@ class Orchestrator:
                 "type": job_type,
             }
 
-        self.results.save_json(job_id, final_bundle)
-        self.traces.complete(trace_id, final_status, {"job_id": job_id, "type": job_type})
+        # 提取配置名用于可读文件名
+        config_name = self._extract_name(final_bundle)
+
+        if not is_momo:
+            self.results.save_json(final_bundle, job_id=job_id)
+        final_trace_id = self.traces.complete(
+            trace_id,
+            final_status,
+            result={"job_id": job_id, "type": job_type},
+            config_name=config_name,
+        )
+
+        # 重命名后 trace_id 已更新为可读格式
 
         result = {
-            "job_id": job_id, "trace_id": trace_id,
+            "job_id": job_id, "trace_id": final_trace_id,
             "status": final_status, "rounds": round_no,
             "bundle": final_bundle.model_dump(mode="json", exclude_none=True),
             "type": job_type,
+            "config_name": config_name,
         }
         if emit_events and close_events and self.events and job_id:
             self.events.mark_done(job_id, result)
@@ -171,3 +208,20 @@ class Orchestrator:
             issues = "\n".join(f"- {i}" for i in critic_result.get("issues", []))
             parts.append(f"[设计审查]\n{issues}")
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _extract_name(bundle) -> str:
+        """从 Bundle 中提取配置名称，用于可读文件命名。"""
+        from ..schemas.bundle import SkillBundle, MonsterBundle, QuestBundle
+        from ..schemas.momo import MomoEncounterBundle, MomoEnemyBundle
+        if isinstance(bundle, SkillBundle) and bundle.skills:
+            return bundle.skills[0].name
+        if isinstance(bundle, MonsterBundle):
+            return bundle.monster_config.name
+        if isinstance(bundle, QuestBundle):
+            return bundle.quest_template.name
+        if isinstance(bundle, MomoEnemyBundle):
+            return bundle.enemy.name
+        if isinstance(bundle, MomoEncounterBundle):
+            return bundle.encounter.name
+        return "unknown"

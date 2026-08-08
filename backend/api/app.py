@@ -33,26 +33,33 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 from backend.stores.seed_store import SeedStore
+from backend.stores.momo_seed_store import MomoSeedStore
 from backend.stores.trace_store import TraceStore
 from backend.stores.result_store import ResultStore
 from backend.stores.event_bus import event_bus
 from backend.validators.rule_engine import RuleEngine
+from backend.validators.momo_rules import MomoRuleEngine
 from backend.pipeline.mock_provider import MockLLMProvider
 from backend.pipeline.orchestrator import Orchestrator
 from backend.pipeline.exporter import CsvExporter
+from backend.pipeline.momo_exporter import MomoExporter, MomoExportResult
 from backend.evaluation.runner import EvalRunner
 from backend.agents.generator import GeneratorAgent
 from backend.agents.critic import CriticAgent
+from backend.schemas.momo import MomoEncounterBundle, MomoEnemyBundle
 
 app = FastAPI(title="ConfigForge API", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ── Stores ────────────────────────────────────────────
 seed_store = SeedStore(str(Path(CF_ROOT) / "data" / "seed"))
+momo_seed_store = MomoSeedStore(Path(CF_ROOT) / "data" / "seed" / "momo")
 trace_store = TraceStore(str(Path(CF_ROOT) / "output" / "traces"))
 result_store = ResultStore(str(Path(CF_ROOT) / "output"))
 rule_engine = RuleEngine(seed_store)
+momo_rule_engine = MomoRuleEngine(momo_seed_store)
 csv_exporter = CsvExporter(str(Path(CF_ROOT) / "output" / "csv"))
+momo_exporter = MomoExporter(Path(CF_ROOT) / "output" / "momo", momo_rule_engine)
 
 # ── Provider Selection ────────────────────────────────
 _ARK = bool(
@@ -63,7 +70,7 @@ _ARK = bool(
 _DS  = bool(os.environ.get("DEEPSEEK_API_KEY"))
 gen_provider = None
 crit_provider = None
-mock_provider = MockLLMProvider(seed_store)
+mock_provider = MockLLMProvider(seed_store, momo_seed_store)
 
 if _ARK:
     try:
@@ -88,7 +95,7 @@ if gen_provider is None and crit_provider is not None:
 
 # ── Agent Wrappers ────────────────────────────────────
 if gen_provider:
-    generator = GeneratorAgent(gen_provider, seed_store)
+    generator = GeneratorAgent(gen_provider, seed_store, momo_seed_store)
     critic = CriticAgent(crit_provider) if crit_provider else None
 else:
     # Mock mode
@@ -97,19 +104,30 @@ else:
         def generate_skill(self, r, fb=""): return self.m.generate_skill_bundle(r, fb)
         def generate_monster(self, r, fb=""): return self.m.generate_monster_bundle(r, fb)
         def generate_quest(self, r, fb=""): return self.m.generate_quest_bundle(r, fb)
+        def generate_momo_enemy(self, r, fb=""): return self.m.generate_momo_enemy_bundle(r, fb)
+        def generate_momo_encounter(self, r, fb=""): return self.m.generate_momo_encounter_bundle(r, fb)
     class _MockCritic:
         def review(self, d): return mock_provider.review(d, "unknown")
     generator = _MockGen(mock_provider)
     critic = _MockCritic()
     print("[ConfigForge] Using MockLLMProvider (MVP mode)")
 
-orchestrator = Orchestrator(generator, critic, seed_store, rule_engine, trace_store, result_store, event_bus=event_bus)
+orchestrator = Orchestrator(
+    generator,
+    critic,
+    seed_store,
+    rule_engine,
+    trace_store,
+    result_store,
+    event_bus=event_bus,
+    momo_rule_engine=momo_rule_engine,
+)
 eval_runner = EvalRunner(orchestrator)
 
 
 # ── Models ────────────────────────────────────────────
 class GenerateRequest(BaseModel):
-    job_type: str = Field(..., pattern="^(skill|monster|quest)$")
+    job_type: str = Field(..., pattern="^(skill|monster|quest|momo_enemy|momo_encounter)$")
     requirement: str = Field(..., min_length=3, max_length=500)
     enable_critic: bool = True
     batch_count: Optional[int] = Field(default=None, ge=1, le=20)
@@ -169,7 +187,11 @@ def _generate_one(job_type: str, requirement: str, enable_critic: bool,
         return orchestrator.generate_skill(requirement, enable_critic, **kwargs)
     if job_type == "monster":
         return orchestrator.generate_monster(requirement, enable_critic, **kwargs)
-    return orchestrator.generate_quest(requirement, enable_critic, **kwargs)
+    if job_type == "quest":
+        return orchestrator.generate_quest(requirement, enable_critic, **kwargs)
+    if job_type == "momo_enemy":
+        return orchestrator.generate_momo_enemy(requirement, enable_critic, **kwargs)
+    return orchestrator.generate_momo_encounter(requirement, enable_critic, **kwargs)
 
 
 def _bundle_identity(job_type: str, bundle: dict) -> dict:
@@ -179,6 +201,12 @@ def _bundle_identity(job_type: str, bundle: dict) -> dict:
     if job_type == "quest":
         config = bundle.get("quest_template") or {}
         return {"id": config.get("quest_id"), "name": config.get("name")}
+    if job_type == "momo_enemy":
+        config = bundle.get("enemy") or {}
+        return {"id": config.get("enemy_id"), "name": config.get("name")}
+    if job_type == "momo_encounter":
+        config = bundle.get("encounter") or {}
+        return {"id": config.get("encounter_id"), "name": config.get("name")}
     skills = bundle.get("skills") or []
     first = skills[0] if skills else {}
     return {"id": first.get("skill_id"), "name": first.get("name")}
@@ -207,6 +235,19 @@ def _batch_item_requirement(req: GenerateRequest, index: int, total: int,
     )
 
 
+def _is_momo_job(job_type: str) -> bool:
+    return job_type in {"momo_enemy", "momo_encounter"}
+
+
+def _export_momo_release(job_type: str, bundle_dicts: list[dict], job_id: str, trace_id: str) -> MomoExportResult:
+    trace = trace_store.get(trace_id) or {"trace_id": trace_id, "status": "unknown", "rounds": []}
+    if job_type == "momo_enemy":
+        bundles = [MomoEnemyBundle(**bundle) for bundle in bundle_dicts]
+    else:
+        bundles = [MomoEncounterBundle(**bundle) for bundle in bundle_dicts]
+    return momo_exporter.export_release(job_type, bundles, job_id, trace)
+
+
 def _run_batch_generation(req: GenerateRequest, batch_count: int,
                           parent_job_id: str, parent_trace_id: str) -> dict:
     event_bus.push(parent_job_id, "batch_start", {
@@ -216,6 +257,7 @@ def _run_batch_generation(req: GenerateRequest, batch_count: int,
     items = []
     identities: list[dict] = []
     all_csv_files: set[str] = set()
+    is_momo = _is_momo_job(req.job_type)
 
     for index in range(1, batch_count + 1):
         child_requirement = _batch_item_requirement(
@@ -242,7 +284,9 @@ def _run_batch_generation(req: GenerateRequest, batch_count: int,
                 child_trace_id,
                 emit_events=False,
             )
-            child["csv_files"] = [
+            # orchestrator 可能已重命名 trace，使用更新后的 trace_id
+            child_trace_id = child.get("trace_id", child_trace_id)
+            child["csv_files"] = [] if is_momo else [
                 str(path) for path in _export(child["bundle"], req.job_type)
             ]
             all_csv_files.update(child["csv_files"])
@@ -305,14 +349,20 @@ def _run_batch_generation(req: GenerateRequest, batch_count: int,
         "bundle": [item["bundle"] for item in items if item.get("bundle")],
         "csv_files": sorted(all_csv_files),
     }
-    trace_store.complete(parent_trace_id, status, {
+    trace_result = {
         "job_id": parent_job_id,
         "type": req.job_type,
         "batch_count": batch_count,
         "succeeded": succeeded,
         "failed": failed,
         "items": summary_items,
-    })
+    }
+    trace_store.complete(parent_trace_id, status, trace_result)
+    if is_momo and result["bundle"]:
+        release = _export_momo_release(req.job_type, result["bundle"], parent_job_id, parent_trace_id)
+        result["csv_files"] = [str(path) for path in release.files if path.suffix == ".csv"]
+        result["momo_release"] = release.to_response()
+        trace_store.complete(parent_trace_id, status, {**trace_result, "momo_release": result["momo_release"]})
     return result
 
 
@@ -416,9 +466,19 @@ async def generate(req: GenerateRequest):
                         job_id,
                         trace_id,
                     )
-                    result["csv_files"] = [
-                        str(path) for path in _export(result["bundle"], req.job_type)
-                    ]
+                    if _is_momo_job(req.job_type):
+                        release = _export_momo_release(req.job_type, [result["bundle"]], job_id, result["trace_id"])
+                        result["csv_files"] = [str(path) for path in release.files if path.suffix == ".csv"]
+                        result["momo_release"] = release.to_response()
+                        trace_store.complete(result["trace_id"], result["status"], {
+                            "job_id": job_id,
+                            "type": req.job_type,
+                            "momo_release": result["momo_release"],
+                        })
+                    else:
+                        result["csv_files"] = [
+                            str(path) for path in _export(result["bundle"], req.job_type)
+                        ]
                 event_bus.mark_done(job_id, result)
             except Exception as e:
                 import traceback; traceback.print_exc()
@@ -530,6 +590,8 @@ async def run_eval():
 async def export_result(trace_id: str = Query(...)):
     t = trace_store.get(trace_id)
     if t is None: raise HTTPException(404, "Trace not found")
+    if _is_momo_job(t["job_type"]) and t.get("final_result", {}).get("momo_release"):
+        return {"status": "ok", "trace_id": trace_id, "momo_release": t["final_result"]["momo_release"]}
     rounds = t.get("rounds") or []
     if not rounds:
         raise HTTPException(400, "Trace has no generation rounds")
@@ -537,6 +599,14 @@ async def export_result(trace_id: str = Query(...)):
     bundle = final_round.get("bundle")
     if not bundle:
         raise HTTPException(400, "Trace has no bundle to export")
+    if _is_momo_job(t["job_type"]):
+        release = _export_momo_release(t["job_type"], [bundle], f"j_{trace_id[-6:]}", trace_id)
+        return {
+            "status": "ok",
+            "trace_id": trace_id,
+            "csv_files": [str(path) for path in release.files if path.suffix == ".csv"],
+            "momo_release": release.to_response(),
+        }
     csv_files = [str(p) for p in _export(bundle, t["job_type"])]
     return {"status": "ok", "trace_id": trace_id, "csv_files": csv_files}
 

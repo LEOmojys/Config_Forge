@@ -1,5 +1,6 @@
 """Trace store: persists generation traces for replay and debugging."""
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -43,15 +44,53 @@ class TraceStore:
         trace["rounds"].append({"round": round_no, **data})
         self._write(trace_id, trace)
 
-    def complete(self, trace_id: str, status: str, result: Optional[dict] = None, error: Optional[str] = None):
+    def complete(self, trace_id: str, status: str, result: Optional[dict] = None,
+                 error: Optional[str] = None, config_name: str = "") -> str:
+        """完成 trace 并重命名为可读文件名。"""
         trace = self._read(trace_id)
         if trace is None:
-            return
+            return trace_id
         trace["status"] = status
         trace["final_result"] = result
         trace["error"] = error
         trace["completed_at"] = datetime.now().isoformat(timespec="seconds")
-        self._write(trace_id, trace)
+
+        # 生成可读文件名：trace__{type}__{name}__{短id}.json
+        if config_name:
+            new_id = self._readable_id(trace_id, trace.get("job_type", ""), config_name)
+            trace["trace_id"] = new_id
+            self._write(trace_id, trace)  # 先保存旧文件
+            self._rename(trace_id, new_id)  # 再重命名
+            trace["trace_id"] = new_id
+            return new_id
+        else:
+            self._write(trace_id, trace)
+            return trace_id
+
+    def rename(self, trace_id: str, config_name: str) -> Optional[str]:
+        """手动重命名 trace 文件，返回新的 trace_id。"""
+        trace = self._read(trace_id)
+        if trace is None:
+            return None
+        new_id = self._readable_id(trace_id, trace.get("job_type", ""), config_name)
+        self._rename(trace_id, new_id)
+        trace["trace_id"] = new_id
+        self._write(new_id, trace)
+        return new_id
+
+    def _readable_id(self, trace_id: str, job_type: str, config_name: str) -> str:
+        """生成可读 trace_id: trace__{type}__{name}__{短uuid}"""
+        safe_name = re.sub(r"[^\w\u4e00-\u9fff\-]", "_", config_name)
+        safe_name = re.sub(r"_+", "_", safe_name).strip("_")[:20]
+        short = trace_id.replace("trace_", "")[-6:]
+        return f"trace__{job_type}__{safe_name}__{short}"
+
+    def _rename(self, old_id: str, new_id: str):
+        """重命名磁盘上的 trace 文件。"""
+        old_path = self._path(old_id)
+        new_path = self._path(new_id)
+        if old_path.exists() and not new_path.exists():
+            old_path.rename(new_path)
 
     def get(self, trace_id: str) -> Optional[dict]:
         return self._read(trace_id)
