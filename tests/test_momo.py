@@ -1,3 +1,4 @@
+import anyio
 import csv
 import importlib
 import json
@@ -5,6 +6,7 @@ from pathlib import Path
 
 from backend.pipeline.mock_provider import MockLLMProvider
 from backend.pipeline.orchestrator import Orchestrator
+from backend.pipeline.exporter import CsvExporter
 from backend.schemas.momo import (
     MomoAttackCategory,
     MomoAttackDefinition,
@@ -19,6 +21,7 @@ from backend.schemas.momo import (
     MomoSpawn,
 )
 from backend.stores.momo_seed_store import MomoSeedStore
+from backend.stores.momo_table_store import MomoTableStore
 from backend.stores.result_store import ResultStore
 from backend.stores.seed_store import SeedStore
 from backend.stores.trace_store import TraceStore
@@ -385,3 +388,70 @@ def test_api_batch_generation_writes_one_momo_release_without_generic_csv(tmp_pa
     assert len(content["enemies"]) == 10
     assert (release_dir / "enemies.csv").exists()
     assert not (tmp_path / "output" / "csv").exists()
+
+
+def test_table_api_lists_momo_release_tables_and_syncs_json_edits(tmp_path: Path, monkeypatch) -> None:
+    api = importlib.import_module("backend.api.app")
+    release = MomoExporter(tmp_path / "momo", _rules()).export_release(
+        job_type="momo_enemy",
+        bundles=[_normal_enemy()],
+        job_id="j_table_test",
+        trace={"trace_id": "trace_table_test", "status": "passed", "rounds": []},
+    )
+    generic_tables = CsvExporter(tmp_path / "csv")
+    momo_tables = MomoTableStore(tmp_path / "momo")
+    table_name = f"momo:{release.release_dir.name}:enemies"
+
+    monkeypatch.setattr(api, "csv_exporter", generic_tables)
+    monkeypatch.setattr(api, "momo_table_store", momo_tables)
+
+    tables = anyio.run(api.list_tables)
+    table = anyio.run(api.get_table, table_name)
+    updated_row = dict(zip(table["headers"], table["rows"][0]))
+    updated_row["name"] = "Updated Cinder Stalker"
+    result = anyio.run(
+        api.update_table_row,
+        table_name,
+        0,
+        api.TableRowRequest(row=updated_row),
+    )
+
+    content = json.loads((release.release_dir / "content.json").read_text(encoding="utf-8"))
+
+    assert table_name in tables
+    assert table["rows"][0][table["headers"].index("enemy_id")] == "momo_enemy_cinder_stalker"
+    assert result["table"]["rows"][0][result["table"]["headers"].index("name")] == "Updated Cinder Stalker"
+    assert content["enemies"][0]["name"] == "Updated Cinder Stalker"
+    assert generic_tables.list_tables() == []
+
+
+def test_table_api_cascades_momo_parent_edits_and_updates_manifest(tmp_path: Path, monkeypatch) -> None:
+    api = importlib.import_module("backend.api.app")
+    release = MomoExporter(tmp_path / "momo", _rules()).export_release(
+        job_type="momo_enemy",
+        bundles=[_normal_enemy()],
+        job_id="j_table_cascade",
+        trace={"trace_id": "trace_table_cascade", "status": "passed", "rounds": []},
+    )
+    monkeypatch.setattr(api, "csv_exporter", CsvExporter(tmp_path / "csv"))
+    monkeypatch.setattr(api, "momo_table_store", MomoTableStore(tmp_path / "momo"))
+    enemy_table = f"momo:{release.release_dir.name}:enemies"
+    attack_table = f"momo:{release.release_dir.name}:enemy_attacks"
+
+    enemy = anyio.run(api.get_table, enemy_table)
+    updated_enemy = dict(zip(enemy["headers"], enemy["rows"][0]))
+    updated_enemy["enemy_id"] = "momo_enemy_renamed"
+    anyio.run(api.update_table_row, enemy_table, 0, api.TableRowRequest(row=updated_enemy))
+
+    attacks = anyio.run(api.get_table, attack_table)
+    assert all(row[attacks["headers"].index("enemy_id")] == "momo_enemy_renamed" for row in attacks["rows"])
+
+    anyio.run(api.delete_table_row, enemy_table, 0)
+    content = json.loads((release.release_dir / "content.json").read_text(encoding="utf-8"))
+    manifest = json.loads((release.release_dir / "manifest.json").read_text(encoding="utf-8"))
+    attacks_after_delete = anyio.run(api.get_table, attack_table)
+
+    assert content["enemies"] == []
+    assert content["enemy_attacks"] == []
+    assert manifest["bundle_count"] == 0
+    assert attacks_after_delete["rows"] == []

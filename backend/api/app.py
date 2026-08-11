@@ -34,6 +34,7 @@ import uvicorn
 
 from backend.stores.seed_store import SeedStore
 from backend.stores.momo_seed_store import MomoSeedStore
+from backend.stores.momo_table_store import MomoTableStore
 from backend.stores.trace_store import TraceStore
 from backend.stores.result_store import ResultStore
 from backend.stores.event_bus import event_bus
@@ -60,6 +61,7 @@ rule_engine = RuleEngine(seed_store)
 momo_rule_engine = MomoRuleEngine(momo_seed_store)
 csv_exporter = CsvExporter(str(Path(CF_ROOT) / "output" / "csv"))
 momo_exporter = MomoExporter(Path(CF_ROOT) / "output" / "momo", momo_rule_engine)
+momo_table_store = MomoTableStore(Path(CF_ROOT) / "output" / "momo")
 
 # ── Provider Selection ────────────────────────────────
 _ARK = bool(
@@ -535,15 +537,25 @@ async def clear_traces(status: Optional[str] = Query(None, pattern="^(running|pa
 
 @app.get("/api/tables")
 async def list_tables():
-    return csv_exporter.list_tables()
+    return [*csv_exporter.list_tables(), *momo_table_store.list_tables()]
 
 @app.get("/api/tables/{table_name}")
 async def get_table(table_name: str):
+    if momo_table_store.is_momo_table_id(table_name):
+        try:
+            return momo_table_store.read_table(table_name)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc))
     return csv_exporter.read_table(table_name)
 
 @app.post("/api/tables/{table_name}/rows")
 async def add_table_row(table_name: str, req: TableRowRequest):
     try:
+        if momo_table_store.is_momo_table_id(table_name):
+            table, sync = momo_table_store.add_row(table_name, req.row)
+            return {"status": "ok", "table": table, "json_sync": sync}
         row = _validate_table_row(table_name, req.row)
         table = csv_exporter.add_row(table_name, row)
         sync = _sync_table_change(table_name, "add", row)
@@ -556,6 +568,9 @@ async def add_table_row(table_name: str, req: TableRowRequest):
 @app.put("/api/tables/{table_name}/rows/{row_index}")
 async def update_table_row(table_name: str, row_index: int, req: TableRowRequest):
     try:
+        if momo_table_store.is_momo_table_id(table_name):
+            table, sync = momo_table_store.update_row(table_name, row_index, req.row)
+            return {"status": "ok", "table": table, "json_sync": sync}
         row = _validate_table_row(table_name, req.row)
         previous, table = csv_exporter.update_row(table_name, row_index, row)
         sync = _sync_table_change(table_name, "update", row, previous=previous)
@@ -570,6 +585,9 @@ async def update_table_row(table_name: str, row_index: int, req: TableRowRequest
 @app.delete("/api/tables/{table_name}/rows/{row_index}")
 async def delete_table_row(table_name: str, row_index: int):
     try:
+        if momo_table_store.is_momo_table_id(table_name):
+            deleted, table, sync = momo_table_store.delete_row(table_name, row_index)
+            return {"status": "ok", "table": table, "deleted_row": deleted, "json_sync": sync}
         deleted, table = csv_exporter.delete_row(table_name, row_index)
         sync = _sync_table_change(table_name, "delete", deleted, previous=deleted)
         return {"status": "ok", "table": table, "deleted_row": deleted, "json_sync": sync}
@@ -577,6 +595,8 @@ async def delete_table_row(table_name: str, row_index: int):
         raise HTTPException(404, detail=str(exc))
     except IndexError as exc:
         raise HTTPException(404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc))
 
 @app.post("/api/tables/validate-all")
 async def validate_all():
