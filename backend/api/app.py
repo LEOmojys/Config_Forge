@@ -604,7 +604,8 @@ async def validate_all():
 
 @app.post("/api/eval/run")
 async def run_eval():
-    return eval_runner.run_ablation(eval_runner.load_samples())
+    results = eval_runner.run_ablation(eval_runner.load_samples())
+    return {**results, "_report": eval_runner.last_report}
 
 @app.post("/api/export")
 async def export_result(trace_id: str = Query(...)):

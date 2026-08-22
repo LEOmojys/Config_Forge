@@ -1,9 +1,12 @@
 """Evaluation module: runs eval sets and produces ablation study results."""
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from ..pipeline.orchestrator import Orchestrator
+
+DEFAULT_EVAL_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "output" / "eval"
 
 
 @dataclass
@@ -24,18 +27,23 @@ class EvalResult:
 
 
 class EvalRunner:
-    def __init__(self, orchestrator: Orchestrator):
+    def __init__(self, orchestrator: Orchestrator, output_dir: str | Path = None):
         self.orchestrator = orchestrator
+        self.output_dir = Path(output_dir) if output_dir else DEFAULT_EVAL_OUTPUT_DIR
+        self._samples_source = "unknown"
+        self.last_report: dict = {}
 
     def load_samples(self, path: str = "backend/evaluation/eval_set.json") -> list[EvalSample]:
         p = Path(path)
         if not p.exists():
+            self._samples_source = "builtin_default_20"
             return self._default_samples()
+        self._samples_source = str(p)
         raw = json.loads(p.read_text(encoding="utf-8"))
         return [EvalSample(**item) for item in raw]
 
-    def run_ablation(self, samples: list[EvalSample]) -> dict:
-        """Run G0-G3 ablation groups and return results."""
+    def run_ablation(self, samples: list[EvalSample], save_report: bool = True) -> dict:
+        """Run G0-G3 ablation groups, persist a report, and return results."""
         results = {}
         # G0 cannot be measured by this structured pipeline: providers must pass
         # Pydantic before Orchestrator receives a bundle.
@@ -49,7 +57,103 @@ class EvalRunner:
         results["G2_rules"] = self._run_group(samples, skip_validation=False, enable_critic=False)
         # G3: Full pipeline (RuleEngine + Critic)
         results["G3_full"] = self._run_group(samples, skip_validation=False, enable_critic=True)
+        if save_report:
+            self.save_report(results, len(samples))
         return results
+
+    def save_report(self, results: dict, sample_total: int = None) -> dict:
+        """Persist ablation results as JSON + Markdown under output/eval/.
+
+        Returns {"json": <path>, "markdown": <path>} and stores it on
+        self.last_report so callers (e.g. the API endpoint) can surface it.
+        """
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "sample_total": sample_total if sample_total is not None else self._total_samples(results),
+            "sample_source": self._samples_source,
+            "generator_provider": self._provider_name(getattr(self.orchestrator, "generator", None)),
+            "critic_provider": self._provider_name(getattr(self.orchestrator, "critic", None)),
+            "groups": results,
+        }
+
+        json_path = self.output_dir / f"ablation_{ts}.json"
+        md_path = self.output_dir / f"ablation_{ts}.md"
+        json_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        md_path.write_text(self._build_markdown_report(payload), encoding="utf-8")
+
+        self.last_report = {"json": str(json_path), "markdown": str(md_path)}
+        return self.last_report
+
+    @staticmethod
+    def _provider_name(agent) -> str:
+        provider = getattr(agent, "provider", None)
+        return type(provider).__name__ if provider is not None else "unknown"
+
+    @staticmethod
+    def _total_samples(results: dict) -> int:
+        for group in results.values():
+            if isinstance(group, dict) and "total" in group:
+                return group["total"]
+        return 0
+
+    @staticmethod
+    def _build_markdown_report(payload: dict) -> str:
+        groups = payload["groups"]
+        labels = {
+            "G0_pure_llm": ("G0: Pure LLM", "基线：纯 LLM 输出（无任何校验层）"),
+            "G1_pydantic": ("G1: + Pydantic", "LLM + Pydantic 结构化校验"),
+            "G2_rules": ("G2: + RuleEngine", "Pydantic + 10 条规则引擎"),
+            "G3_full": ("G3: + Critic", "完整管线：规则 + Critic 评审"),
+        }
+        lines = [
+            "# ConfigForge 消融实验报告",
+            "",
+            f"- 生成时间: {payload['generated_at']}",
+            f"- 样本数: {payload['sample_total']}",
+            f"- 样本来源: {payload['sample_source']}",
+            f"- 生成端 Provider: {payload['generator_provider']}",
+            f"- 评审端 Provider: {payload['critic_provider']}",
+            "",
+            "## 总览",
+            "",
+            "| 组 | 说明 | 通过/总数 | 通过率 | 平均轮数 |",
+            "|---|---|---|---|---|",
+        ]
+        for key, (title, desc) in labels.items():
+            g = groups.get(key) or {}
+            if g.get("disabled"):
+                lines.append(f"| {title} | {desc} | N/A | N/A | N/A |")
+            else:
+                lines.append(
+                    f"| {title} | {desc} | {g['passed']}/{g['total']} "
+                    f"| {g['pass_rate'] * 100:.1f}% | {g['avg_rounds']} |"
+                )
+        lines.append("")
+
+        for key, (title, _) in labels.items():
+            g = groups.get(key) or {}
+            lines.append(f"## {title}")
+            if g.get("disabled"):
+                lines.append("")
+                lines.append(f"> 未测量：{g.get('note', '')}")
+                lines.append("")
+                continue
+            lines.append("")
+            lines.append("| ID | 类型 | 通过 | 轮数 | 错误 |")
+            lines.append("|---|---|---|---|---|")
+            for d in g.get("details", []):
+                err = (d.get("error") or "").replace("|", "\\|")
+                lines.append(
+                    f"| {d['id']} | {d['type']} | {'✅' if d['passed'] else '❌'} "
+                    f"| {d['rounds']} | {err} |"
+                )
+            lines.append("")
+        return "\n".join(lines)
 
     def _not_measured(self, samples: list[EvalSample], note: str) -> dict:
         return {

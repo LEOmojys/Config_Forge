@@ -104,6 +104,10 @@ Up to 3 revision rounds. Exceeding returns `need_human` status.
 - G2: + RuleEngine (10 rules)
 - G3: + Critic review (full pipeline)
 
+Every run via `POST /api/eval/run` also persists an ablation report to
+`output/eval/` (machine-readable `ablation_<ts>.json` + human-readable
+`ablation_<ts>.md`); the response carries the paths under `_report`.
+
 ## Output Acceptance Tests
 
 The acceptance framework runs every case in an isolated directory and audits
