@@ -4,7 +4,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import Optional
 from ..pipeline.orchestrator import Orchestrator
+from ..schemas.bundle import SkillBundle, MonsterBundle, QuestBundle
 
 DEFAULT_EVAL_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "output" / "eval"
 
@@ -27,9 +29,13 @@ class EvalResult:
 
 
 class EvalRunner:
-    def __init__(self, orchestrator: Orchestrator, output_dir: str | Path = None):
+    def __init__(self, orchestrator: Orchestrator, output_dir: str | Path = None,
+                 rule_engine=None):
         self.orchestrator = orchestrator
         self.output_dir = Path(output_dir) if output_dir else DEFAULT_EVAL_OUTPUT_DIR
+        # Golden-yardstick auditor: scores every group's final output against
+        # the FULL rule contract, independent of which gates the group enabled.
+        self.rule_engine = rule_engine if rule_engine is not None else getattr(orchestrator, "rules", None)
         self._samples_source = "unknown"
         self.last_report: dict = {}
 
@@ -42,24 +48,110 @@ class EvalRunner:
         raw = json.loads(p.read_text(encoding="utf-8"))
         return [EvalSample(**item) for item in raw]
 
-    def run_ablation(self, samples: list[EvalSample], save_report: bool = True) -> dict:
-        """Run G0-G3 ablation groups, persist a report, and return results."""
+    def run_ablation(self, samples: list[EvalSample], save_report: bool = True,
+                     progress_cb=None, checkpoint_path=None) -> dict:
+        """Run G0-G3 ablation groups, persist a report, and return results.
+
+        progress_cb(event_type, data) is invoked with:
+          - ("eval_start", {"total": N})
+          - ("group_start", {"group": key, "group_index": i, "label": ..., "total": N})
+          - ("sample_done", {"group": key, "index": i, "total": N, "passed": bool, "rounds": n})
+          - ("group_done", {"group": key, "result": {...}})
+
+        checkpoint_path: if given, a JSON checkpoint of completed groups plus
+        the current group is written before every group runs. On success the
+        checkpoint is removed; if the process dies mid-run, the checkpoint
+        survives as the recovery artifact.
+        """
+        group_labels = {
+            "G0_pure_llm": "G0: Pure LLM",
+            "G1_pydantic": "G1: + Pydantic",
+            "G2_rules": "G2: + RuleEngine",
+            "G3_full": "G3: + Critic",
+        }
+        cp = Path(checkpoint_path) if checkpoint_path else None
         results = {}
+
+        def emit(etype: str, data: dict):
+            if progress_cb is not None:
+                progress_cb(etype, data)
+
+        def _checkpoint(current_group: Optional[str]):
+            if cp is None:
+                return
+            try:
+                cp.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "status": "running",
+                    "current_group": current_group,
+                    "sample_total": len(samples),
+                    "sample_source": self._samples_source,
+                    "groups": results,
+                }
+                cp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError:
+                pass  # checkpointing must never break the run
+
+        def group_emit(group_key: str):
+            def _cb(etype: str, data: dict):
+                if etype == "sample_done":
+                    data = {"group": group_key, **data}
+                emit(etype, data)
+            return _cb
+
+        emit("eval_start", {"total": len(samples)})
+
         # G0 cannot be measured by this structured pipeline: providers must pass
         # Pydantic before Orchestrator receives a bundle.
+        emit("group_start", {"group": "G0_pure_llm", "group_index": 1,
+                             "label": group_labels["G0_pure_llm"], "total": len(samples)})
         results["G0_pure_llm"] = self._not_measured(
             samples,
             "Raw LLM output is not available because generation is schema-gated before orchestration.",
         )
+        emit("group_done", {"group": "G0_pure_llm", "result": results["G0_pure_llm"]})
+        _checkpoint("G1_pydantic")
+
         # G1: LLM + Pydantic only (Pydantic built into GeneratorAgent._generate)
-        results["G1_pydantic"] = self._run_group(samples, skip_validation=True, enable_critic=False)
+        emit("group_start", {"group": "G1_pydantic", "group_index": 2,
+                             "label": group_labels["G1_pydantic"], "total": len(samples)})
+        results["G1_pydantic"] = self._run_group(samples, skip_validation=True, enable_critic=False, progress_cb=group_emit("G1_pydantic"))
+        emit("group_done", {"group": "G1_pydantic", "result": results["G1_pydantic"]})
+        _checkpoint("G2_rules")
+
         # G2: LLM + Pydantic + RuleEngine (no Critic)
-        results["G2_rules"] = self._run_group(samples, skip_validation=False, enable_critic=False)
+        emit("group_start", {"group": "G2_rules", "group_index": 3,
+                             "label": group_labels["G2_rules"], "total": len(samples)})
+        results["G2_rules"] = self._run_group(samples, skip_validation=False, enable_critic=False, progress_cb=group_emit("G2_rules"))
+        emit("group_done", {"group": "G2_rules", "result": results["G2_rules"]})
+        _checkpoint("G3_full")
+
         # G3: Full pipeline (RuleEngine + Critic)
-        results["G3_full"] = self._run_group(samples, skip_validation=False, enable_critic=True)
+        emit("group_start", {"group": "G3_full", "group_index": 4,
+                             "label": group_labels["G3_full"], "total": len(samples)})
+        results["G3_full"] = self._run_group(samples, skip_validation=False, enable_critic=True, progress_cb=group_emit("G3_full"))
+        emit("group_done", {"group": "G3_full", "result": results["G3_full"]})
+
         if save_report:
             self.save_report(results, len(samples))
+        if cp is not None:
+            cp.unlink(missing_ok=True)
         return results
+
+    @staticmethod
+    def finalize_checkpoint(checkpoint_path, status: str):
+        """Mark a surviving checkpoint with its terminal status (e.g. after
+        the process was interrupted mid-run)."""
+        cp = Path(checkpoint_path)
+        if not cp.exists():
+            return
+        try:
+            payload = json.loads(cp.read_text(encoding="utf-8"))
+            payload["status"] = status
+            cp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass  # best-effort recovery marker
 
     def save_report(self, results: dict, sample_total: int = None) -> dict:
         """Persist ablation results as JSON + Markdown under output/eval/.
@@ -121,18 +213,32 @@ class EvalRunner:
             "",
             "## 总览",
             "",
-            "| 组 | 说明 | 通过/总数 | 通过率 | 平均轮数 |",
-            "|---|---|---|---|---|",
+            "| 组 | 说明 | 通过率 | 合同符合率 | 平均轮数 | 平均token/样本 | 修订样本 | 失败(生成/耗尽) |",
+            "|---|---|---|---|---|---|---|---|",
         ]
         for key, (title, desc) in labels.items():
             g = groups.get(key) or {}
             if g.get("disabled"):
-                lines.append(f"| {title} | {desc} | N/A | N/A | N/A |")
+                lines.append(f"| {title} | {desc} | N/A | N/A | N/A | N/A | N/A | N/A |")
             else:
+                fb = g.get("failures_by_kind") or {}
                 lines.append(
-                    f"| {title} | {desc} | {g['passed']}/{g['total']} "
-                    f"| {g['pass_rate'] * 100:.1f}% | {g['avg_rounds']} |"
+                    f"| {title} | {desc} "
+                    f"| {g['pass_rate'] * 100:.1f}% ({g['passed']}/{g['total']}) "
+                    f"| **{g.get('contract_pass_rate', 0) * 100:.1f}%** ({g.get('contract_passed', 0)}/{g['total']}) "
+                    f"| {g['avg_rounds']} "
+                    f"| {g.get('avg_tokens_per_sample', 0)} "
+                    f"| {g.get('revised', 0)} ({g.get('revision_rate', 0) * 100:.0f}%) "
+                    f"| {fb.get('generation_error', 0)}/{fb.get('need_human', 0)} |"
                 )
+        lines.append("")
+        lines.append(
+            "> **通过率** = 该组门禁下的管线状态通过率（及格线随组变化，不跨组可比）。"
+        )
+        lines.append(
+            "> **合同符合率** = 统一裁判：各组最终产物经完整规则引擎离线审计的通过率"
+            "（同一把尺子，跨组可比，是消融对比的金标准）。"
+        )
         lines.append("")
 
         for key, (title, _) in labels.items():
@@ -166,11 +272,37 @@ class EvalRunner:
             "note": note,
         }
 
-    def _run_group(self, samples: list[EvalSample], skip_validation: bool, enable_critic: bool) -> dict:
+    def _audit(self, job_type: str, bundle_dict: Optional[dict]):
+        """Golden-yardstick audit: score the final bundle against the FULL rule
+        contract, regardless of which gates this group enabled. Returns None
+        when the audit cannot run (no rules engine, no bundle, or rebuild
+        failure) — the audit must never break the eval."""
+        if self.rule_engine is None or not bundle_dict:
+            return None
+        try:
+            if job_type == "skill":
+                bundle = SkillBundle.model_validate(bundle_dict)
+                return self.rule_engine.validate_skill_bundle(bundle)
+            if job_type == "monster":
+                bundle = MonsterBundle.model_validate(bundle_dict)
+                return self.rule_engine.validate_monster_bundle(bundle)
+            if job_type == "quest":
+                bundle = QuestBundle.model_validate(bundle_dict)
+                return self.rule_engine.validate_quest_bundle(bundle)
+        except Exception:
+            pass
+        return None
+
+    def _run_group(self, samples: list[EvalSample], skip_validation: bool, enable_critic: bool,
+                   progress_cb=None) -> dict:
         group_results = []
         passed = 0
+        contract_passed = 0
         total_rounds = 0
-        for sample in samples:
+        total_tokens = 0
+        revised = 0  # samples that needed >1 round (revision loop actually engaged)
+        failures_by_kind: dict[str, int] = {"generation_error": 0, "need_human": 0}
+        for index, sample in enumerate(samples, start=1):
             try:
                 res = self.orchestrator._run(
                     sample.type, sample.requirement,
@@ -182,14 +314,78 @@ class EvalRunner:
                 if ok:
                     passed += 1
                 total_rounds += res["rounds"]
-                group_results.append({"id": sample.id, "passed": ok, "rounds": res["rounds"], "type": sample.type})
+                entry = {
+                    "id": sample.id, "passed": ok, "rounds": res["rounds"], "type": sample.type,
+                    "error_kind": None if ok else ("need_human" if res["status"] == "need_human" else "unknown"),
+                }
+                if res["rounds"] > 1:
+                    revised += 1
+
+                # Golden-yardstick audit: same full contract for every group.
+                audit = self._audit(sample.type, res.get("bundle"))
+                if audit is None:
+                    entry["audit_passed"] = False
+                    entry["audit_errors"] = None
+                    entry["audit_error_rule_ids"] = []
+                else:
+                    entry["audit_passed"] = audit.passed
+                    entry["audit_errors"] = len(audit.errors)
+                    entry["audit_error_rule_ids"] = [v.rule_id for v in audit.errors]
+                    if audit.passed:
+                        contract_passed += 1
+
+                # Aggregate token usage across all rounds (generation + critic).
+                tokens = {"prompt": 0, "completion": 0, "total": 0}
+                for log in res.get("round_logs") or []:
+                    for side in ("generation", "critic"):
+                        u = (log.get("tokens") or {}).get(side) or {}
+                        tokens["prompt"] += u.get("prompt_tokens", 0) or 0
+                        tokens["completion"] += u.get("completion_tokens", 0) or 0
+                        tokens["total"] += u.get("total_tokens", 0) or 0
+                entry["tokens"] = tokens
+                total_tokens += tokens["total"]
+
+                if not ok and res["status"] == "need_human":
+                    failures_by_kind["need_human"] += 1
+                    entry["error"] = f"need_human after {res['rounds']} revision rounds"
+                    logs = res.get("round_logs") or []
+                    if logs:
+                        entry["last_violations"] = logs[-1].get("violations", [])
+                        entry["last_critic"] = logs[-1].get("critic")
+                group_results.append(entry)
             except Exception as e:
-                group_results.append({"id": sample.id, "passed": False, "rounds": 0, "type": sample.type, "error": str(e)})
+                failures_by_kind["generation_error"] += 1
+                group_results.append({
+                    "id": sample.id, "passed": False, "rounds": 0, "type": sample.type,
+                    "error_kind": "generation_error",
+                    "error": str(e),
+                    "tokens": {"prompt": 0, "completion": 0, "total": 0},
+                    # No output produced: not contract-compliant by definition.
+                    "audit_passed": False,
+                    "audit_errors": None,
+                    "audit_error_rule_ids": [],
+                })
+            if progress_cb is not None:
+                done = group_results[-1]
+                progress_cb("sample_done", {
+                    "index": index,
+                    "total": len(samples),
+                    "passed": done.get("passed", False),
+                    "rounds": done.get("rounds", 0),
+                    "error": done.get("error"),
+                })
         return {
             "passed": passed,
             "total": len(samples),
             "pass_rate": round(passed / len(samples), 3) if samples else 0,
+            # Golden yardstick: same full-contract criterion for all groups.
+            "contract_passed": contract_passed,
+            "contract_pass_rate": round(contract_passed / len(samples), 3) if samples else 0,
             "avg_rounds": round(total_rounds / len(samples), 2) if samples else 0,
+            "avg_tokens_per_sample": round(total_tokens / len(samples), 1) if samples else 0,
+            "revised": revised,
+            "revision_rate": round(revised / len(samples), 3) if samples else 0,
+            "failures_by_kind": failures_by_kind,
             "details": group_results,
         }
 

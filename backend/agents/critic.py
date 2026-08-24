@@ -16,6 +16,11 @@ class CriticAgent:
     def __init__(self, provider: LLMProvider):
         self.provider = provider
 
+    @property
+    def last_usage(self):
+        """Token usage of the provider's last call (None if unavailable)."""
+        return getattr(self.provider, "last_usage", None)
+
     def review(self, config_dict: dict) -> dict:
         """返回 {"approved": bool, "issues": [str]}"""
         user_prompt = build_critic_user_prompt(config_dict)

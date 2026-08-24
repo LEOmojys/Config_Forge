@@ -5,7 +5,7 @@ Provider Selection Strategy (by env var):
 - DEEPSEEK_API_KEY set → DeepSeekProvider for critic (异构模型交叉审查)
 - Neither set          → MockLLMProvider (MVP mode, 无需 API Key)
 """
-import sys, os, asyncio, re
+import sys, os, asyncio, re, threading, uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -124,7 +124,9 @@ orchestrator = Orchestrator(
     event_bus=event_bus,
     momo_rule_engine=momo_rule_engine,
 )
-eval_runner = EvalRunner(orchestrator)
+eval_runner = EvalRunner(orchestrator, rule_engine=rule_engine)
+_eval_lock = threading.Lock()
+_eval_state = {"running": False}
 
 
 # ── Models ────────────────────────────────────────────
@@ -604,8 +606,53 @@ async def validate_all():
 
 @app.post("/api/eval/run")
 async def run_eval():
-    results = eval_runner.run_ablation(eval_runner.load_samples())
-    return {**results, "_report": eval_runner.last_report}
+    """Start ablation study in background, return job_id for SSE streaming.
+
+    Progress events are pushed to the event bus under the returned job_id
+    (group_start / sample_done / group_done / done) and streamed via the
+    existing /api/jobs/{job_id}/events SSE endpoint.
+    """
+    with _eval_lock:
+        if _eval_state["running"]:
+            raise HTTPException(409, "An ablation run is already in progress")
+        _eval_state["running"] = True
+
+    job_id = f"eval_{uuid.uuid4().hex[:10]}"
+    checkpoint_path = str(Path(CF_ROOT) / "output" / "eval" / f"eval_running_{job_id}.json")
+    event_bus.push(job_id, "start", {
+        "job_id": job_id,
+        "message": "Ablation study started (G0-G3)",
+    })
+
+    def _run_eval():
+        try:
+            samples = eval_runner.load_samples()
+
+            def emit(etype: str, data: dict):
+                event_bus.push(job_id, etype, data)
+
+            results = eval_runner.run_ablation(
+                samples, save_report=True, progress_cb=emit,
+                checkpoint_path=checkpoint_path,
+            )
+            event_bus.mark_done(job_id, {**results, "_report": eval_runner.last_report})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            # Keep the partial checkpoint as the recovery artifact.
+            eval_runner.finalize_checkpoint(checkpoint_path, "interrupted")
+            event_bus.mark_error(job_id, str(e))
+        finally:
+            with _eval_lock:
+                _eval_state["running"] = False
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, _run_eval)
+
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "started",
+    })
 
 @app.post("/api/export")
 async def export_result(trace_id: str = Query(...)):

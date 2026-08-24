@@ -20,6 +20,11 @@ class GeneratorAgent:
         self.seed = seed_store
         self.momo_seed = momo_seed_store
 
+    @property
+    def last_usage(self):
+        """Token usage of the provider's last call (None if unavailable)."""
+        return getattr(self.provider, "last_usage", None)
+
     def generate_skill(self, requirement: str, feedback: str = "") -> SkillBundle:
         return self._generate(
             requirement=requirement,

@@ -71,6 +71,9 @@ class Orchestrator:
         feedback: Optional[str] = None
         final_bundle = None
         bundle = None  # initialized for linter
+        round_logs: list[dict] = []  # compact per-round records for eval/dry-run observability
+        gen_usage = None
+        crit_usage = None
 
         def _emit(etype: str, data: dict):
             if emit_events and self.events and job_id:
@@ -99,6 +102,7 @@ class Orchestrator:
                 bundle = self.generator.generate_momo_encounter(requirement, feedback or "")
                 validate_fn = self.momo_rules.validate_encounter_bundle
 
+            gen_usage = self._agent_usage(self.generator)
             _emit("generated", {"round": round_no, "bundle_summary": str(type(bundle).__name__)})
 
             # 2) L2 规则引擎校验
@@ -117,9 +121,11 @@ class Orchestrator:
 
             # 3) L3 Critic 审查
             critic_result = None
+            crit_usage = None
             if not vr.errors and enable_critic and self.critic is not None:
                 _emit("reviewing", {"round": round_no, "message": "Critic reviewing..."})
                 critic_result = self.critic.review(bundle.model_dump(mode="json", exclude_none=True))
+                crit_usage = self._agent_usage(self.critic)
                 _emit("reviewed", {
                     "round": round_no,
                     "approved": critic_result.get("approved", True),
@@ -136,7 +142,15 @@ class Orchestrator:
                 ],
                 "critic": critic_result,
                 "passed": vr.passed and (critic_result is None or critic_result.get("approved", True)),
+                "tokens": {"generation": gen_usage, "critic": crit_usage},
             }
+            round_logs.append({
+                "round": round_no,
+                "violations": round_data["violations"],
+                "critic": round_data["critic"],
+                "passed": round_data["passed"],
+                "tokens": round_data["tokens"],
+            })
             if not dry_run:
                 self.traces.add_round(trace_id, round_no, round_data)
 
@@ -167,6 +181,7 @@ class Orchestrator:
                 "status": final_status, "rounds": round_no,
                 "bundle": final_bundle.model_dump(mode="json", exclude_none=True) if final_bundle else None,
                 "type": job_type,
+                "round_logs": round_logs,
             }
 
         # 提取配置名用于可读文件名
@@ -194,6 +209,17 @@ class Orchestrator:
             self.events.mark_done(job_id, result)
 
         return result
+
+    @staticmethod
+    def _agent_usage(agent) -> Optional[dict]:
+        """Read the provider token usage recorded by an agent's last call."""
+        if agent is None:
+            return None
+        usage = getattr(agent, "last_usage", None)
+        if usage is None:
+            provider = getattr(agent, "provider", None)
+            usage = getattr(provider, "last_usage", None)
+        return usage
 
     @staticmethod
     def _build_feedback(vr: ValidationResult, critic_result: Optional[dict]) -> str:
